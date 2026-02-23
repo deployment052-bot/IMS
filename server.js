@@ -29,7 +29,7 @@ app.use("/sql", require("./routes/sql/sqlauth"));
 app.use("/sqlstock", require("./routes/sql/stock.sql"));
 app.use('/hrrole',require('./routes/sql/sqlhr.route'));
 app.use("/sqlbranch", require("./routes/sql/sql.admin"));
-
+app.use('/stock-manager',require('./routes/sql/stock.manager'))
 
 // MongoDB Connection
 mongoose

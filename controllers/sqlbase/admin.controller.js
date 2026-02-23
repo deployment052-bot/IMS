@@ -797,3 +797,74 @@ exports.getSuperAdminAnalytics = async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 };
+
+
+exports.getLocationWiseSummary = async (req, res) => {
+  try {
+    const locations = await Branch.findAll({
+      attributes: [
+        "location",
+
+        // total branches per location
+        [
+          sequelize.fn("COUNT", sequelize.col("Branch.id")),
+          "totalBranches"
+        ],
+
+        // total users per location
+        [
+          sequelize.fn(
+            "COUNT",
+            sequelize.fn("DISTINCT", sequelize.col("users.id"))
+          ),
+          "totalUsers"
+        ],
+
+        // total stock quantity per location
+        [
+          sequelize.fn(
+            "COALESCE",
+            sequelize.fn("SUM", sequelize.col("stocks.quantity")),
+            0
+          ),
+          "totalStock"
+        ],
+
+        // total stock value per location
+        [
+          sequelize.fn(
+            "COALESCE",
+            sequelize.fn("SUM", sequelize.col("stocks.value")),
+            0
+          ),
+          "totalStockValue"
+        ]
+      ],
+
+      include: [
+        {
+          model: Stock,
+          as: "stocks",
+          attributes: []
+        },
+        {
+          model: User,
+          as: "users",
+          attributes: []
+        }
+      ],
+
+      group: ["location"],
+      order: [["location", "ASC"]],
+      raw: true
+    });
+
+    res.json({
+      totalLocations: locations.length,
+      locations
+    });
+
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+};

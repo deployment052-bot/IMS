@@ -30,6 +30,9 @@ app.use("/sqlstock", require("./routes/sql/stock.sql"));
 app.use('/hrrole',require('./routes/sql/sqlhr.route'));
 app.use("/sqlbranch", require("./routes/sql/sql.admin"));
 app.use('/stock-manager',require('./routes/sql/stock.manager'))
+app.use('/ladger',require('./routes/sql/ladgerroute'))
+ 
+app.use('/sales',require('./routes/sql/sales'))
 
 // MongoDB Connection
 mongoose

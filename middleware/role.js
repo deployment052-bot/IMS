@@ -1,6 +1,6 @@
 module.exports = (allowedRoles = []) => {
   return (req, res, next) => {
-    const userRole = req.user?.role?.name; // ✅ CORRECT
+    const userRole = req.user?.role?.name; 
 
     if (!userRole) {
       return res.status(403).json({ message: "Role not found" });

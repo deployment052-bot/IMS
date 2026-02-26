@@ -1,17 +1,109 @@
-const { Branch, User, Role, Stock, sequelize } = require("../../../model/SQL_Model");
+const { Branch, Stock, sequelize } = require("../../../model/SQL_Model");
 const { Op } = require("sequelize");
 
-exports.getStockManagerDashboard = async (req, res) => {
+
+
+exports.getStockLocations = async (req, res) => {
   try {
-    const branchId = req.user.branch_id;
+    const locations = await Branch.findAll({
+      attributes: [
+        "location",
+        [
+          sequelize.fn("COUNT", sequelize.col("Branch.id")),
+          "totalBranches"
+        ],
+        [
+          sequelize.fn(
+            "COALESCE",
+            sequelize.fn("SUM", sequelize.col("stocks.quantity")),
+            0
+          ),
+          "totalStock"
+        ],
+        [
+          sequelize.fn(
+            "COALESCE",
+            sequelize.fn("SUM", sequelize.col("stocks.value")),
+            0
+          ),
+          "totalValue"
+        ]
+      ],
+      include: [
+        {
+          model: Stock,
+          as: "stocks",
+          attributes: []
+        }
+      ],
+      group: ["location"],
+      raw: true
+    });
 
-    const totalStock = await Stock.sum("quantity", {
-      where: { branch_id: branchId }
-    }) || 0;
+    res.json({ locations });
 
-    const totalValue = await Stock.sum("value", {
-      where: { branch_id: branchId }
-    }) || 0;
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+};
+
+
+// ==========================================
+// 2️⃣ GET BRANCH LIST BY LOCATION
+// ==========================================
+exports.getBranchesByLocation = async (req, res) => {
+  try {
+    const { location } = req.params;
+
+    const branches = await Branch.findAll({
+      where: { location },
+      attributes: [
+        "id",
+        "name",
+        [
+          sequelize.fn(
+            "COALESCE",
+            sequelize.fn("SUM", sequelize.col("stocks.quantity")),
+            0
+          ),
+          "totalStock"
+        ]
+      ],
+      include: [
+        {
+          model: Stock,
+          as: "stocks",
+          attributes: []
+        }
+      ],
+      group: ["Branch.id"],
+      raw: true
+    });
+
+    res.json({ branches });
+
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+};
+
+
+// ==========================================
+// 3️⃣ GET BRANCH DASHBOARD
+// ==========================================
+exports.getBranchDashboard = async (req, res) => {
+  try {
+    const { branchId } = req.params;
+
+    const totalStock =
+      (await Stock.sum("quantity", {
+        where: { branch_id: branchId }
+      })) || 0;
+
+    const totalValue =
+      (await Stock.sum("value", {
+        where: { branch_id: branchId }
+      })) || 0;
 
     const lowStock = await Stock.count({
       where: {
@@ -27,33 +119,58 @@ exports.getStockManagerDashboard = async (req, res) => {
       }
     });
 
+    // Category Chart
+    const categoryChart = await Stock.findAll({
+      where: { branch_id: branchId },
+      attributes: [
+        "category",
+        [sequelize.fn("SUM", sequelize.col("quantity")), "qty"]
+      ],
+      group: ["category"],
+      raw: true
+    });
+
+    // Monthly Trend (PostgreSQL safe)
+    const monthlyTrend = await Stock.findAll({
+      where: { branch_id: branchId },
+      attributes: [
+        [
+          sequelize.fn(
+            "TO_CHAR",
+            sequelize.col("created_at"),
+            "YYYY-MM"
+          ),
+          "month"
+        ],
+        [sequelize.fn("SUM", sequelize.col("quantity")), "stock"]
+      ],
+      group: [
+        sequelize.fn(
+          "TO_CHAR",
+          sequelize.col("created_at"),
+          "YYYY-MM"
+        )
+      ],
+      raw: true
+    });
+
+    // Table Data
+    const stocks = await Stock.findAll({
+      where: { branch_id: branchId },
+      order: [["created_at", "DESC"]]
+    });
+
     res.json({
-      branch_id: branchId,
       stats: {
         totalStock,
         totalValue,
         lowStock,
         damagedStock
-      }
-    });
-
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-};
-exports.getBranchStocks = async (req, res) => {
-  try {
-
-    const stocks = await Stock.findAll({
-      where: { branch_id: req.user.branch_id },
-      include: [
-        { association: "owner", attributes: ["id", "name"] }
-      ],
-      order: [["created_at", "DESC"]]
-    });
-
-    res.json({
-      total: stocks.length,
+      },
+      charts: {
+        categoryChart,
+        monthlyTrend
+      },
       stocks
     });
 
@@ -62,66 +179,92 @@ exports.getBranchStocks = async (req, res) => {
   }
 };
 
-exports.updateStockQuantity = async (req, res) => {
+exports.getStockManagerHeadDashboard = async (req, res) => {
   try {
-    const { stockId } = req.params;
-    const { quantity } = req.body;
 
-    const stock = await Stock.findOne({
-      where: {
-        id: stockId,
-        branch_id: req.user.branch_id
-      }
+
+    const totalStock = (await Stock.sum("quantity")) || 0;
+
+    const totalValue = (await Stock.sum("value")) || 0;
+
+    const lowStock = await Stock.count({
+      where: { quantity: { [Op.lt]: 5 } }
     });
 
-    if (!stock) {
-      return res.status(404).json({
-        error: "Stock not found or unauthorized"
-      });
-    }
-
-    stock.quantity = quantity;
-    stock.value = quantity * stock.rate;
-
-    await stock.save();
-
-    res.json({
-      message: "Stock updated successfully",
-      stock
+    const scrapItems = await Stock.count({
+      where: { status: "DAMAGED" }
     });
 
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-};
+    const transitItems = (await Stock.sum("quantity", {
+      where: { status: "REPAIRABLE" }
+    })) || 0;
 
-exports.getStockManagerAnalytics = async (req, res) => {
-  try {
-    const branchId = req.user.branch_id;
 
-    const categoryDistribution = await Stock.findAll({
-      where: { branch_id: branchId },
+    // ========================
+    // CATEGORY CHART (GLOBAL)
+    // ========================
+    const categoryChart = await Stock.findAll({
       attributes: [
         "category",
-        [sequelize.fn("SUM", sequelize.col("quantity")), "total"]
+        [sequelize.fn("SUM", sequelize.col("quantity")), "qty"]
       ],
       group: ["category"],
       raw: true
     });
 
-    const statusDistribution = await Stock.findAll({
-      where: { branch_id: branchId },
+
+    // ========================
+    // MONTHLY TREND (PostgreSQL Safe)
+    // ========================
+    const monthlyTrend = await Stock.findAll({
       attributes: [
-        "status",
-        [sequelize.fn("COUNT", sequelize.col("id")), "count"]
+        [
+          sequelize.fn("TO_CHAR", sequelize.col("created_at"), "YYYY-MM"),
+          "month"
+        ],
+        [sequelize.fn("SUM", sequelize.col("quantity")), "stock"]
       ],
-      group: ["status"],
+      group: [
+        sequelize.fn("TO_CHAR", sequelize.col("created_at"), "YYYY-MM")
+      ],
+      order: [
+        [
+          sequelize.fn("TO_CHAR", sequelize.col("created_at"), "YYYY-MM"),
+          "ASC"
+        ]
+      ],
       raw: true
     });
 
+
+    // ========================
+    // COMPLETE INVENTORY TABLE
+    // ========================
+    const stocks = await Stock.findAll({
+      include: [
+        {
+          model: Branch,
+          as: "branch",
+          attributes: ["id", "name", "location"]
+        }
+      ],
+      order: [["created_at", "DESC"]]
+    });
+
+
     res.json({
-      categoryDistribution,
-      statusDistribution
+      stats: {
+        totalStock,
+        totalValue,
+        lowStock,
+        scrapItems,
+        transitItems
+      },
+      charts: {
+        categoryChart,
+        monthlyTrend
+      },
+      stocks
     });
 
   } catch (err) {
@@ -129,41 +272,31 @@ exports.getStockManagerAnalytics = async (req, res) => {
   }
 };
 
-
-
-
-exports.getStockManagerFullDashboard = async (req, res) => {
+exports.getSuperStockManagerDashboard = async (req, res) => {
   try {
-    const branchId = req.user.branch_id;
 
-    const totalStock = await Stock.sum("quantity", {
-      where: { branch_id: branchId }
-    }) || 0;
+    // =========================
+    // GLOBAL STATS
+    // =========================
+    const totalStock = (await Stock.sum("quantity")) || 0;
+    const totalValue = (await Stock.sum("value")) || 0;
 
     const lowStock = await Stock.count({
-      where: {
-        branch_id: branchId,
-        quantity: { [Op.lt]: 5 }
-      }
+      where: { quantity: { [Op.lt]: 5 } }
     });
 
-    const scrapItems = await Stock.count({
-      where: {
-        branch_id: branchId,
-        status: "DAMAGED"
-      }
+    const damagedStock = await Stock.count({
+      where: { status: "DAMAGED" }
     });
 
-    const transitItems = await Stock.sum("quantity", {
-      where: {
-        branch_id: branchId,
-        status: "REPAIRABLE"
-      }
-    }) || 0;
+    const repairableStock = (await Stock.sum("quantity", {
+      where: { status: "REPAIRABLE" }
+    })) || 0;
 
-    // CATEGORY BAR CHART
+    // =========================
+    // CATEGORY GRAPH
+    // =========================
     const categoryChart = await Stock.findAll({
-      where: { branch_id: branchId },
       attributes: [
         "category",
         [sequelize.fn("SUM", sequelize.col("quantity")), "currentStock"]
@@ -172,39 +305,522 @@ exports.getStockManagerFullDashboard = async (req, res) => {
       raw: true
     });
 
-    // AGING ANALYTICS
-    const agingData = await Stock.findAll({
-      where: { branch_id: branchId },
+    // =========================
+    // STOCK IN / OUT (DEMO LOGIC)
+    // =========================
+    const stockMovement = await Stock.findAll({
       attributes: [
-        "aging",
-        [sequelize.fn("COUNT", sequelize.col("id")), "count"]
+        [sequelize.fn("DATE", sequelize.col("created_at")), "date"],
+        [sequelize.fn("SUM", sequelize.col("quantity")), "stockIn"]
       ],
-      group: ["aging"],
+      group: ["date"],
+      order: [["date", "ASC"]],
       raw: true
     });
 
-    // MONTHLY MOVEMENT
-    const monthlyTrend = await Stock.findAll({
-      where: { branch_id: branchId },
-      attributes: [
-        [sequelize.fn("DATE_FORMAT", sequelize.col("created_at"), "%Y-%m"), "month"],
-        [sequelize.fn("SUM", sequelize.col("quantity")), "stockIn"]
+    const movementData = stockMovement.map(d => ({
+      date: d.date,
+      stockIn: Number(d.stockIn),
+      stockOut: Math.floor(Number(d.stockIn) * 0.4) // replace later with real sales table
+    }));
+
+   
+    const stocks = await Stock.findAll({
+      include: [
+        {
+          model: Branch,
+          as: "branch",
+          attributes: ["id", "name", "location"]
+        }
       ],
-      group: ["month"],
-      raw: true
+      order: [["created_at", "DESC"]]
     });
 
     res.json({
       stats: {
         totalStock,
+        totalValue,
         lowStock,
-        scrapItems,
-        transitItems
+        damagedStock,
+        repairableStock
       },
       charts: {
         categoryChart,
-        agingData,
+        movementData
+      },
+      stocks
+    });
+
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+};
+
+exports.getSuperStockManagerDashboard = async (req, res) => {
+  try {
+
+   
+    const totalStock = (await Stock.sum("quantity")) || 0;
+    const totalValue = (await Stock.sum("value")) || 0;
+
+    const lowStock = await Stock.count({
+      where: { quantity: { [Op.lt]: 5 } }
+    });
+
+    const damagedStock = await Stock.count({
+      where: { status: "DAMAGED" }
+    });
+
+    const repairableStock = (await Stock.sum("quantity", {
+      where: { status: "REPAIRABLE" }
+    })) || 0;
+
+    const categoryChart = await Stock.findAll({
+      attributes: [
+        "category",
+        [sequelize.fn("SUM", sequelize.col("quantity")), "currentStock"]
+      ],
+      group: ["category"],
+      raw: true
+    });
+
+    
+    const stockMovement = await Stock.findAll({
+      attributes: [
+        [sequelize.fn("DATE", sequelize.col("created_at")), "date"],
+        [sequelize.fn("SUM", sequelize.col("quantity")), "stockIn"]
+      ],
+      group: ["date"],
+      order: [["date", "ASC"]],
+      raw: true
+    });
+
+    const movementData = stockMovement.map(d => ({
+      date: d.date,
+      stockIn: Number(d.stockIn),
+      stockOut: Math.floor(Number(d.stockIn) * 0.4) // replace later with real sales table
+    }));
+
+
+    const stocks = await Stock.findAll({
+      include: [
+        {
+          model: Branch,
+          as: "branch",
+          attributes: ["id", "name", "location"]
+        }
+      ],
+      order: [["created_at", "DESC"]]
+    });
+
+    res.json({
+      stats: {
+        totalStock,
+        totalValue,
+        lowStock,
+        damagedStock,
+        repairableStock
+      },
+      charts: {
+        categoryChart,
+        movementData
+      },
+      stocks
+    });
+
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+};
+
+exports.getSuperStockManagerLocationDashboard = async (req, res) => {
+  try {
+    const { location } = req.params;
+
+
+    const branches = await Branch.findAll({
+      where: { location },
+      attributes: ["id"]
+    });
+
+    const branchIds = branches.map(b => b.id);
+
+    if (branchIds.length === 0) {
+      return res.json({
+        location,
+        stats: {},
+        charts: {},
+        stocks: []
+      });
+    }
+
+ 
+    const totalStock = (await Stock.sum("quantity", {
+      where: { branch_id: branchIds }
+    })) || 0;
+
+    const totalValue = (await Stock.sum("value", {
+      where: { branch_id: branchIds }
+    })) || 0;
+
+    const lowStock = await Stock.count({
+      where: {
+        branch_id: branchIds,
+        quantity: { [Op.lt]: 5 }
+      }
+    });
+
+    const damagedStock = await Stock.count({
+      where: {
+        branch_id: branchIds,
+        status: "DAMAGED"
+      }
+    });
+
+ 
+    const categoryChart = await Stock.findAll({
+      where: { branch_id: branchIds },
+      attributes: [
+        "category",
+        [sequelize.fn("SUM", sequelize.col("quantity")), "qty"]
+      ],
+      group: ["category"],
+      raw: true
+    });
+
+    const monthlyTrend = await Stock.findAll({
+      where: { branch_id: branchIds },
+      attributes: [
+        [
+          sequelize.fn("TO_CHAR", sequelize.col("created_at"), "YYYY-MM"),
+          "month"
+        ],
+        [sequelize.fn("SUM", sequelize.col("quantity")), "stock"]
+      ],
+      group: [
+        sequelize.fn("TO_CHAR", sequelize.col("created_at"), "YYYY-MM")
+      ],
+      order: [
+        [
+          sequelize.fn("TO_CHAR", sequelize.col("created_at"), "YYYY-MM"),
+          "ASC"
+        ]
+      ],
+      raw: true
+    });
+
+  
+    const stocks = await Stock.findAll({
+      where: { branch_id: branchIds },
+      include: [
+        {
+          model: Branch,
+          as: "branch",
+          attributes: ["id", "name"]
+        }
+      ],
+      order: [["created_at", "DESC"]]
+    });
+
+    res.json({
+      location,
+      stats: {
+        totalStock,
+        totalValue,
+        lowStock,
+        damagedStock
+      },
+      charts: {
+        categoryChart,
         monthlyTrend
+      },
+      stocks
+    });
+
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+};
+
+
+exports.getSuperBranchDashboard = async (req, res) => {
+  try {
+    const { branchId } = req.params;
+
+    const branch = await Branch.findByPk(branchId);
+    if (!branch) {
+      return res.status(404).json({ error: "Branch not found" });
+    }
+
+    
+    const totalStock =
+      (await Stock.sum("quantity", {
+        where: { branch_id: branchId }
+      })) || 0;
+
+    const totalValue =
+      (await Stock.sum("value", {
+        where: { branch_id: branchId }
+      })) || 0;
+
+    const lowStock = await Stock.count({
+      where: {
+        branch_id: branchId,
+        quantity: { [Op.lt]: 5 }
+      }
+    });
+
+    const damagedStock = await Stock.count({
+      where: {
+        branch_id: branchId,
+        status: "DAMAGED"
+      }
+    });
+
+    const repairableStock =
+      (await Stock.sum("quantity", {
+        where: {
+          branch_id: branchId,
+          status: "REPAIRABLE"
+        }
+      })) || 0;
+
+    // =========================
+    // CATEGORY GRAPH
+    // =========================
+    const categoryChart = await Stock.findAll({
+      where: { branch_id: branchId },
+      attributes: [
+        "category",
+        [sequelize.fn("SUM", sequelize.col("quantity")), "qty"]
+      ],
+      group: ["category"],
+      raw: true
+    });
+
+    // =========================
+    // MONTHLY TREND
+    // =========================
+    const monthlyTrend = await Stock.findAll({
+      where: { branch_id: branchId },
+      attributes: [
+        [
+          sequelize.fn("TO_CHAR", sequelize.col("created_at"), "YYYY-MM"),
+          "month"
+        ],
+        [sequelize.fn("SUM", sequelize.col("quantity")), "stock"]
+      ],
+      group: [
+        sequelize.fn("TO_CHAR", sequelize.col("created_at"), "YYYY-MM")
+      ],
+      order: [
+        [
+          sequelize.fn("TO_CHAR", sequelize.col("created_at"), "YYYY-MM"),
+          "ASC"
+        ]
+      ],
+      raw: true
+    });
+
+    // =========================
+    // STOCK TABLE
+    // =========================
+    const stocks = await Stock.findAll({
+      where: { branch_id: branchId },
+      order: [["created_at", "DESC"]]
+    });
+
+    res.json({
+      branchInfo: branch,
+      stats: {
+        totalStock,
+        totalValue,
+        lowStock,
+        damagedStock,
+        repairableStock
+      },
+      charts: {
+        categoryChart,
+        monthlyTrend
+      },
+      stocks
+    });
+
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+};
+
+//not called yet 
+exports.getItemBranchAnalytics = async (req, res) => {
+  try {
+    const { branchId, itemName } = req.params;
+
+    // 1️⃣ Total Stats
+    const totalStock =
+      (await Stock.sum("quantity", {
+        where: { branch_id: branchId, item: itemName }
+      })) || 0;
+
+    const totalValue =
+      (await Stock.sum("value", {
+        where: { branch_id: branchId, item: itemName }
+      })) || 0;
+
+    // 2️⃣ Aging Distribution
+    const agingChart = await Stock.findAll({
+      where: { branch_id: branchId, item: itemName },
+      attributes: [
+        "aging",
+        [sequelize.fn("SUM", sequelize.col("quantity")), "qty"]
+      ],
+      group: ["aging"],
+      order: [["aging", "ASC"]],
+      raw: true
+    });
+
+    // 3️⃣ Monthly Movement (PostgreSQL Safe)
+    const monthlyTrend = await Stock.findAll({
+      where: { branch_id: branchId, item: itemName },
+      attributes: [
+        [
+          sequelize.fn("TO_CHAR", sequelize.col("created_at"), "YYYY-MM"),
+          "month"
+        ],
+        [sequelize.fn("SUM", sequelize.col("quantity")), "stock"]
+      ],
+      group: [
+        sequelize.fn("TO_CHAR", sequelize.col("created_at"), "YYYY-MM")
+      ],
+      order: [
+        [
+          sequelize.fn("TO_CHAR", sequelize.col("created_at"), "YYYY-MM"),
+          "ASC"
+        ]
+      ],
+      raw: true
+    });
+
+    // 4️⃣ Status Distribution
+    const statusChart = await Stock.findAll({
+      where: { branch_id: branchId, item: itemName },
+      attributes: [
+        "status",
+        [sequelize.fn("SUM", sequelize.col("quantity")), "qty"]
+      ],
+      group: ["status"],
+      raw: true
+    });
+
+    res.json({
+      branchId,
+      item: itemName,
+      stats: {
+        totalStock,
+        totalValue
+      },
+      charts: {
+        agingChart,
+        monthlyTrend,
+        statusChart
+      }
+    });
+
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+};
+
+
+
+exports.getAgingAnalytics = async (req, res) => {
+  try {
+    const { branchId } = req.params;
+
+    if (!branchId) {
+      return res.status(400).json({ error: "Branch ID required" });
+    }
+
+  
+    const totalItems =
+      (await Stock.sum("quantity", {
+        where: { branch_id: branchId }
+      })) || 0;
+
+ 
+    const freshStocks =
+      (await Stock.sum("quantity", {
+        where: {
+          branch_id: branchId,
+          aging: { [Op.between]: [0, 180] }
+        }
+      })) || 0;
+
+    
+    const critical =
+      (await Stock.sum("quantity", {
+        where: {
+          branch_id: branchId,
+          aging: { [Op.gt]: 730 }
+        }
+      })) || 0;
+
+   
+    const avgAging =
+      (await Stock.findOne({
+        where: { branch_id: branchId },
+        attributes: [
+          [sequelize.fn("AVG", sequelize.col("aging")), "average"]
+        ],
+        raw: true
+      })) || { average: 0 };
+
+
+    const agingDistribution = {
+      "0-180":
+        (await Stock.sum("quantity", {
+          where: {
+            branch_id: branchId,
+            aging: { [Op.between]: [0, 180] }
+          }
+        })) || 0,
+
+      "181-365":
+        (await Stock.sum("quantity", {
+          where: {
+            branch_id: branchId,
+            aging: { [Op.between]: [181, 365] }
+          }
+        })) || 0,
+
+      "366-730":
+        (await Stock.sum("quantity", {
+          where: {
+            branch_id: branchId,
+            aging: { [Op.between]: [366, 730] }
+          }
+        })) || 0,
+
+      "730+":
+        (await Stock.sum("quantity", {
+          where: {
+            branch_id: branchId,
+            aging: { [Op.gt]: 730 }
+          }
+        })) || 0
+    };
+
+
+    res.json({
+      branchId,
+      stats: {
+        totalItems,
+        freshStocks,
+        critical,
+        averageAging: parseFloat(avgAging.average || 0).toFixed(2)
+      },
+      charts: {
+        agingDistribution
       }
     });
 

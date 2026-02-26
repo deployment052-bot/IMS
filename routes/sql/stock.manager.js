@@ -5,7 +5,8 @@ const {
   getStockLocations,
   getBranchesByLocation,
   getBranchDashboard,
-  updateStockQuantity,  getStockManagerHeadDashboard,getSuperStockManagerDashboard,getSuperBranchDashboard,getItemBranchAnalytics,getAgingAnalytics
+  updateStockQuantity,  getStockManagerHeadDashboard,getSuperStockManagerDashboard,getSuperBranchDashboard,getItemBranchAnalytics,getAgingAnalytics,getSuperStockManagerLocationDashboard
+
 } = require("../../controllers/sqlbase/manager/stock.manager");
 
 const auth = require("../../middleware/auth");
@@ -16,7 +17,7 @@ const checkRole = require("../../middleware/role");
 router.get(
   "/locations",
   auth,
-  checkRole(["stock_manager"]),
+  checkRole(["stock_manager","super_stock_manager"]),
   getStockLocations
 );
 
@@ -72,5 +73,14 @@ router.get(
   getItemBranchAnalytics
 );
 router.get("/aging/:branchId", getAgingAnalytics);
+
+router.get(
+  "/locations-super/:location",
+  auth,
+  checkRole(["stock_manager","super_stock_manager"]),
+  getSuperStockManagerLocationDashboard
+
+);
+// getSuperStockManagerLocationDashboard
 
 module.exports = router;

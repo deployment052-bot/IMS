@@ -452,7 +452,7 @@ exports.getSuperStockManagerDashboard = async (req, res) => {
         categoryChart,
         movementData
       },
-      stocks
+      // stocks
     });
 
   } catch (err) {
@@ -568,7 +568,44 @@ exports.getSuperStockManagerLocationDashboard = async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 };
+exports.getAllStatesDashboard = async (req, res) => {
+  try {
 
+    const data = await Branch.findAll({
+      attributes: [
+        "state",
+        [sequelize.fn("COUNT", sequelize.col("Branch.id")), "totalBranches"],
+        [sequelize.fn("SUM", sequelize.col("Stocks.quantity")), "totalStock"],
+        [sequelize.fn("SUM", sequelize.col("Stocks.value")), "totalValue"],
+        [
+          sequelize.fn("SUM",
+            sequelize.literal(`CASE WHEN Stocks.type = 'IN' THEN 1 ELSE 0 END`)
+          ),
+          "stockInCount"
+        ],
+        [
+          sequelize.fn("SUM",
+            sequelize.literal(`CASE WHEN Stocks.type = 'OUT' THEN 1 ELSE 0 END`)
+          ),
+          "stockOutCount"
+        ]
+      ],
+      include: [
+        {
+          model: Stock,
+          attributes: []
+        }
+      ],
+      group: ["state"],
+      raw: true
+    });
+
+    res.json(data);
+
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+};
 
 exports.getSuperBranchDashboard = async (req, res) => {
   try {

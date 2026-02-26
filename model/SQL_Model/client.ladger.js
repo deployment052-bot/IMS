@@ -7,7 +7,10 @@ const ClientLedger = sequelize.define("ClientLedger", {
     type: DataTypes.INTEGER,
     allowNull: false
   },
-
+client_code: {
+  type: DataTypes.STRING,
+  unique: true
+},
   branch_id: {
     type: DataTypes.INTEGER,
     allowNull: false

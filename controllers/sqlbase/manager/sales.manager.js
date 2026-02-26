@@ -1,34 +1,32 @@
 const { Op } = require("sequelize");
-const {
-  Client,
-  ClientLedger,
-  Branch, Quotation, QuotationItem,
-  sequelize
-} = require("../../../model/SQL_Model");
-
-
-
+const {Client,ClientLedger,Branch, Quotation, QuotationItem,sequelize} = require("../../../model/SQL_Model");
+const puppeteer = require("puppeteer");
 exports.createClient = async (req, res) => {
+  const t = await sequelize.transaction();
+
   try {
     const { name, phone, email, address, branch_id, gst_number } = req.body;
-  console.log(req.body)
+
     if (!name || !branch_id) {
       return res.status(400).json({ error: "name and branch_id required" });
     }
 
-    const whereCondition = { branch_id };
+    // 🔹 Last client of that branch
+    const lastClient = await Client.findOne({
+      where: { branch_id },
+      order: [["createdAt", "DESC"]],
+      transaction: t,
+      lock: t.LOCK.UPDATE
+    });
 
-    if (phone || email) {
-      whereCondition[Op.or] = [];
-      if (phone) whereCondition[Op.or].push({ phone });
-      if (email) whereCondition[Op.or].push({ email });
+    let nextNumber = 1;
+
+    if (lastClient && lastClient.client_code) {
+      const lastNumber = parseInt(lastClient.client_code.split("-")[1]);
+      nextNumber = lastNumber + 1;
     }
 
-    const exists = await Client.findOne({ where: whereCondition });
-
-    if (exists) {
-      return res.status(400).json({ error: "Client already exists" });
-    }
+    const client_code = `BR${branch_id}-${String(nextNumber).padStart(4, "0")}`;
 
     const client = await Client.create({
       name,
@@ -36,12 +34,16 @@ exports.createClient = async (req, res) => {
       email,
       address,
       branch_id,
-      gst_number
-    });
-  console.log()
+      gst_number,
+      client_code
+    }, { transaction: t });
+
+    await t.commit();
+
     res.status(201).json({ message: "Client created", client });
 
   } catch (err) {
+    await t.rollback();
     res.status(500).json({ error: err.message });
   }
 };
@@ -125,6 +127,131 @@ exports.createQuotation = async (req, res) => {
 
   } catch (err) {
     await t.rollback();
+    res.status(500).json({ error: err.message });
+  }
+};
+
+
+
+exports.generateQuotationPDF = async (req, res) => {
+  try {
+    const { quotation_id } = req.params;
+
+    const quotation = await Quotation.findByPk(quotation_id, {
+      include: [
+        { model: Client },
+        { model: Branch }
+      ]
+    });
+
+    const items = await QuotationItem.findAll({
+      where: { quotation_id }
+    });
+
+    const client = quotation.Client;
+    const branch = quotation.Branch;
+
+    let itemRows = "";
+
+    items.forEach((item, index) => {
+      itemRows += `
+        <tr>
+          <td>${index + 1}</td>
+          <td>${item.product_name}</td>
+          <td>${item.quantity}</td>
+          <td>${item.price}</td>
+          <td>${item.total}</td>
+        </tr>
+      `;
+    });
+
+    const html = `
+    <html>
+    <head>
+      <style>
+        body { font-family: Arial; }
+        table { width: 100%; border-collapse: collapse; }
+        th, td { border: 1px solid black; padding: 5px; }
+        .header { text-align:center; }
+        .right { text-align:right; }
+      </style>
+    </head>
+    <body>
+
+    <div class="header">
+      <h2>${branch.name}</h2>
+      <p>${branch.address}</p>
+      <p>GSTIN: ${branch.gst_number}</p>
+      <h3>QUOTATION</h3>
+    </div>
+
+    <div class="right">
+      <p><strong>Quotation No:</strong> ${quotation.quotation_no}</p>
+      <p><strong>Date:</strong> ${quotation.createdAt.toDateString()}</p>
+    </div>
+
+    <hr/>
+
+    <h4>Billing Address</h4>
+    <p>${client.name}</p>
+    <p>${client.address}</p>
+    <p>GST: ${client.gst_number}</p>
+
+    <br/>
+
+    <table>
+      <thead>
+        <tr>
+          <th>No</th>
+          <th>Description</th>
+          <th>Qty</th>
+          <th>Rate</th>
+          <th>Amount</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${itemRows}
+      </tbody>
+    </table>
+
+    <br/>
+
+    <div class="right">
+      <p><strong>Subtotal:</strong> ₹${quotation.subtotal}</p>
+      <p><strong>GST:</strong> ₹${quotation.gst_total}</p>
+      <p><strong>Grand Total:</strong> ₹${quotation.grand_total}</p>
+    </div>
+
+    <br/><br/>
+
+    <p><strong>Bank Details:</strong></p>
+    <p>${branch.bank_name}</p>
+    <p>Account No: ${branch.account_number}</p>
+    <p>IFSC: ${branch.ifsc}</p>
+
+    <br/>
+
+    <div class="right">
+      <p>For ${branch.name}</p>
+      <br/><br/>
+      <p>Authorised Signatory</p>
+    </div>
+
+    </body>
+    </html>
+    `;
+
+    const browser = await puppeteer.launch();
+    const page = await browser.newPage();
+    await page.setContent(html);
+
+    const pdf = await page.pdf({ format: "A4" });
+    await browser.close();
+
+    res.contentType("application/pdf");
+    res.send(pdf);
+
+  } catch (err) {
     res.status(500).json({ error: err.message });
   }
 };

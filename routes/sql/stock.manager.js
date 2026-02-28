@@ -5,7 +5,7 @@ const {
   getStockLocations,
   getBranchesByLocation,
   getBranchDashboard,
-  updateStockQuantity,  getStockManagerHeadDashboard,getSuperStockManagerDashboard,getSuperBranchDashboard,getItemBranchAnalytics,getAgingAnalytics,getSuperStockManagerLocationDashboard
+  updateStockQuantity,  getStockManagerHeadDashboard,getSuperStockManagerDashboard,getSuperBranchDashboard,getItemBranchAnalytics,getAgingAnalytics,getSuperStockManagerLocationDashboard,getAllStatesDashboard
 
 } = require("../../controllers/sqlbase/manager/stock.manager");
 
@@ -13,7 +13,7 @@ const auth = require("../../middleware/auth");
 const checkRole = require("../../middleware/role");
 
 
-
+// this is for finding branch in head 
 router.get(
   "/locations",
   auth,
@@ -24,18 +24,18 @@ router.get(
 
 
 router.get(
-  "/location/:location",
+  "/locations/:location",
   auth,
-  checkRole(["stock_manager"]),
+  checkRole(["stock_manager","super_stock_manager"]),
   getBranchesByLocation
 );
 
 
 
 router.get(
-  "/branch/:branchId",
+  "/branchs/:branchId",
   auth,
-  checkRole(["stock_manager"]),
+  checkRole(["stock_manager","super_stock_manager"]),
   getBranchDashboard
 );
 

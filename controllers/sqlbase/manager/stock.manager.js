@@ -8,10 +8,17 @@ exports.getStockLocations = async (req, res) => {
     const locations = await Branch.findAll({
       attributes: [
         "location",
+
+        // ✅ correct branch count
         [
-          sequelize.fn("COUNT", sequelize.col("Branch.id")),
+          sequelize.fn(
+            "COUNT",
+            sequelize.fn("DISTINCT", sequelize.col("Branch.id"))
+          ),
           "totalBranches"
         ],
+
+        // ✅ total stock
         [
           sequelize.fn(
             "COALESCE",
@@ -20,6 +27,8 @@ exports.getStockLocations = async (req, res) => {
           ),
           "totalStock"
         ],
+
+        // ✅ total value
         [
           sequelize.fn(
             "COALESCE",
@@ -29,6 +38,7 @@ exports.getStockLocations = async (req, res) => {
           "totalValue"
         ]
       ],
+
       include: [
         {
           model: Stock,
@@ -36,7 +46,9 @@ exports.getStockLocations = async (req, res) => {
           attributes: []
         }
       ],
-      group: ["location"],
+
+      group: ["Branch.location"],
+
       raw: true
     });
 
@@ -53,22 +65,78 @@ exports.getStockLocations = async (req, res) => {
 // ==========================================
 exports.getBranchesByLocation = async (req, res) => {
   try {
+
     const { location } = req.params;
 
     const branches = await Branch.findAll({
+
       where: { location },
+
       attributes: [
+
         "id",
         "name",
+
+        // CURRENT STOCK
         [
           sequelize.fn(
             "COALESCE",
             sequelize.fn("SUM", sequelize.col("stocks.quantity")),
             0
           ),
-          "totalStock"
+          "currentStock"
+        ],
+
+        // TOTAL VALUE
+        [
+          sequelize.fn(
+            "COALESCE",
+            sequelize.fn("SUM", sequelize.col("stocks.value")),
+            0
+          ),
+          "totalValue"
+        ],
+
+        // DAMAGED STOCK
+        [
+          sequelize.fn(
+            "COALESCE",
+            sequelize.fn(
+              "SUM",
+              sequelize.literal(
+                `CASE 
+                  WHEN stocks.status = 'DAMAGED' 
+                  THEN stocks.quantity 
+                  ELSE 0 
+                END`
+              )
+            ),
+            0
+          ),
+          "damagedStock"
+        ],
+
+        // REPAIRABLE STOCK
+        [
+          sequelize.fn(
+            "COALESCE",
+            sequelize.fn(
+              "SUM",
+              sequelize.literal(
+                `CASE 
+                  WHEN stocks.status = 'REPAIRABLE' 
+                  THEN stocks.quantity 
+                  ELSE 0 
+                END`
+              )
+            ),
+            0
+          ),
+          "repairableStock"
         ]
+
       ],
+
       include: [
         {
           model: Stock,
@@ -76,14 +144,19 @@ exports.getBranchesByLocation = async (req, res) => {
           attributes: []
         }
       ],
+
       group: ["Branch.id"],
+
       raw: true
+
     });
 
     res.json({ branches });
 
   } catch (err) {
+
     res.status(500).json({ error: err.message });
+
   }
 };
 

@@ -74,186 +74,357 @@ exports.listClients = async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 };
-
 exports.createQuotation = async (req, res) => {
-  const t = await sequelize.transaction();
-  try {
-    const { client_id, branch_id, products, gst_percent } = req.body;
 
-    if (!client_id || !branch_id || !Array.isArray(products) || products.length === 0) {
-      return res.status(400).json({ error: "client_id, branch_id and products are required" });
+  const t = await sequelize.transaction();
+
+  try {
+
+    const {
+      client,
+      branch_id,
+      products,
+      gst_percent = 0
+    } = req.body;
+
+    if (!branch_id || !products) {
+      return res.status(400).json({
+        error: "branch_id & products required"
+      });
     }
 
-    
-    let totalAmount = 0;
-    products.forEach(p => {
-      if (!p.product_name || !p.quantity || !p.unit_price) {
-        throw new Error("Each product must have name, quantity and unit_price");
-      }
-      totalAmount += p.quantity * p.unit_price;
+
+    // ✅ client auto create / get
+
+    const clientData =
+      await exports.getOrCreateClient(
+        {
+          ...client,
+          branch_id
+        },
+        t
+      );
+
+
+    // ✅ quotation number
+
+    const last = await Quotation.findOne({
+      where: { branch_id },
+      order: [["createdAt", "DESC"]],
+      transaction: t,
+      lock: t.LOCK.UPDATE
     });
 
-    const gstAmount = gst_percent ? (totalAmount * gst_percent) / 100 : 0;
-    const grandTotal = totalAmount + gstAmount;
+    let next = 1;
 
-    
-    const quotation = await Quotation.create({
-      client_id,
-      branch_id,
-      total_amount: grandTotal,
-      gst_amount: gstAmount,
-      status: "pending"
-    }, { transaction: t });
-
-    
-    for (const p of products) {
-      await QuotationItem.create({
-        quotation_id: quotation.id,
-        product_name: p.product_name,
-        quantity: p.quantity,
-        unit_price: p.unit_price,
-        specifications: p.specifications || null,
-        subtotal: p.quantity * p.unit_price
-      }, { transaction: t });
+    if (last && last.quotation_no) {
+      next =
+        Number(
+          last.quotation_no.split("-")[2]
+        ) + 1;
     }
+
+    const quotation_no =
+      `QT-${branch_id}-${String(next).padStart(4, "0")}`;
+
+
+    // ✅ total
+
+    let subtotal = 0;
+
+    for (const p of products) {
+
+      subtotal +=
+        p.quantity *
+        p.unit_price;
+
+    }
+
+    const gst_amount =
+      subtotal * gst_percent / 100;
+
+    const grand_total =
+      subtotal + gst_amount;
+
+
+    // ✅ create quotation
+
+    const quotation =
+      await Quotation.create({
+
+        quotation_no,
+        client_id: clientData.id,
+        branch_id,
+
+        total_amount: grand_total,
+        gst_amount,
+
+        status: "pending"
+
+      }, { transaction: t });
+
+
+    // ✅ items
+
+    for (const p of products) {
+
+      await QuotationItem.create({
+
+        quotation_id: quotation.id,
+
+        product_name: p.product_name,
+
+        quantity: p.quantity,
+
+        unit_price: p.unit_price,
+
+        subtotal:
+          p.quantity *
+          p.unit_price
+
+      }, { transaction: t });
+
+    }
+
 
     await t.commit();
 
-    const fullQuotation = await Quotation.findByPk(quotation.id, {
-      include: [{ model: QuotationItem, as: "items" }]
+    res.json({
+      message: "QT created",
+      quotation
     });
 
-    res.status(201).json({ message: "Quotation created successfully", quotation: fullQuotation });
-
-  } catch (err) {
-    await t.rollback();
-    res.status(500).json({ error: err.message });
   }
+  catch (err) {
+
+    await t.rollback();
+
+    res.status(500).json({
+      error: err.message
+    });
+
+  }
+
 };
 
 
+exports.convertQuotationToInvoice = async (req, res) => {
+
+  const t = await sequelize.transaction();
+
+  try {
+
+    const { id } = req.params;
+
+    const q =
+      await Quotation.findByPk(id);
+
+    if (!q)
+      return res.status(404).json({
+        error: "Not found"
+      });
+
+    if (q.status !== "approved")
+      return res.status(400).json({
+        error: "Approve first"
+      });
+
+
+    // ✅ status change
+
+    q.status = "invoiced";
+
+    await q.save({ transaction: t });
+
+
+    // ✅ ledger entry
+
+    await ClientLedger.create({
+
+      client_id: q.client_id,
+
+      branch_id: q.branch_id,
+
+      type: "SALE",
+
+      invoice_no:
+        q.quotation_no,
+
+      amount:
+        q.total_amount,
+
+      remark:
+        "Invoice from QT"
+
+    }, { transaction: t });
+
+
+    await t.commit();
+
+    res.json({
+      message:
+        "Invoice created"
+    });
+
+  }
+  catch (err) {
+
+    await t.rollback();
+
+    res.status(500).json({
+      error: err.message
+    });
+
+  }
+
+};
+exports.approveQuotation = async (req, res) => {
+
+  const { id } = req.params;
+
+  const q =
+    await Quotation.findByPk(id);
+
+  if (!q)
+    return res
+      .status(404)
+      .json({ error: "Not found" });
+
+  q.status = "approved";
+
+  await q.save();
+
+  res.json({
+    message: "Approved"
+  });
+
+};
 
 exports.generateQuotationPDF = async (req, res) => {
+
   try {
+
     const { quotation_id } = req.params;
 
-    const quotation = await Quotation.findByPk(quotation_id, {
-      include: [
-        { model: Client },
-        { model: Branch }
-      ]
-    });
+    const quotation =
+      await Quotation.findByPk(
+        quotation_id,
+        {
+          include: [
+            { model: Client },
+            { model: Branch }
+          ]
+        }
+      );
 
-    const items = await QuotationItem.findAll({
-      where: { quotation_id }
-    });
+    const items =
+      await QuotationItem.findAll({
+        where: { quotation_id }
+      });
 
-    const client = quotation.Client;
-    const branch = quotation.Branch;
+    const client =
+      quotation.Client;
 
-    let itemRows = "";
+    const branch =
+      quotation.Branch;
 
-    items.forEach((item, index) => {
-      itemRows += `
-        <tr>
-          <td>${index + 1}</td>
-          <td>${item.product_name}</td>
-          <td>${item.quantity}</td>
-          <td>${item.price}</td>
-          <td>${item.total}</td>
-        </tr>
+    let rows = "";
+
+    items.forEach((it, i) => {
+
+      rows += `
+      <tr>
+        <td>${i + 1}</td>
+        <td>${it.product_name}</td>
+        <td>${it.quantity}</td>
+        <td>${it.unit_price}</td>
+        <td>${it.subtotal}</td>
+      </tr>
       `;
+
     });
+
 
     const html = `
+
     <html>
-    <head>
-      <style>
-        body { font-family: Arial; }
-        table { width: 100%; border-collapse: collapse; }
-        th, td { border: 1px solid black; padding: 5px; }
-        .header { text-align:center; }
-        .right { text-align:right; }
-      </style>
-    </head>
     <body>
 
-    <div class="header">
-      <h2>${branch.name}</h2>
-      <p>${branch.address}</p>
-      <p>GSTIN: ${branch.gst_number}</p>
-      <h3>QUOTATION</h3>
-    </div>
-
-    <div class="right">
-      <p><strong>Quotation No:</strong> ${quotation.quotation_no}</p>
-      <p><strong>Date:</strong> ${quotation.createdAt.toDateString()}</p>
-    </div>
+    <h2>${branch.name}</h2>
+    <p>${branch.address}</p>
 
     <hr/>
 
-    <h4>Billing Address</h4>
+    <h3>Quotation</h3>
+
+    <p>No: ${quotation.quotation_no}</p>
+
+    <p>Date:
+    ${quotation.createdAt.toDateString()}
+    </p>
+
+    <h4>Client</h4>
+
     <p>${client.name}</p>
     <p>${client.address}</p>
-    <p>GST: ${client.gst_number}</p>
 
-    <br/>
+    <table border="1" width="100%">
 
-    <table>
-      <thead>
-        <tr>
-          <th>No</th>
-          <th>Description</th>
-          <th>Qty</th>
-          <th>Rate</th>
-          <th>Amount</th>
-        </tr>
-      </thead>
-      <tbody>
-        ${itemRows}
-      </tbody>
+    <tr>
+      <th>#</th>
+      <th>Item</th>
+      <th>Qty</th>
+      <th>Rate</th>
+      <th>Total</th>
+    </tr>
+
+    ${rows}
+
     </table>
 
-    <br/>
+    <h3>
+    Total:
+    ${quotation.total_amount}
+    </h3>
 
-    <div class="right">
-      <p><strong>Subtotal:</strong> ₹${quotation.subtotal}</p>
-      <p><strong>GST:</strong> ₹${quotation.gst_total}</p>
-      <p><strong>Grand Total:</strong> ₹${quotation.grand_total}</p>
-    </div>
-
-    <br/><br/>
-
-    <p><strong>Bank Details:</strong></p>
-    <p>${branch.bank_name}</p>
-    <p>Account No: ${branch.account_number}</p>
-    <p>IFSC: ${branch.ifsc}</p>
-
-    <br/>
-
-    <div class="right">
-      <p>For ${branch.name}</p>
-      <br/><br/>
-      <p>Authorised Signatory</p>
-    </div>
+    <h3>
+    GST:
+    ${quotation.gst_amount}
+    </h3>
 
     </body>
     </html>
+
     `;
 
-    const browser = await puppeteer.launch();
-    const page = await browser.newPage();
+
+    const browser =
+      await puppeteer.launch();
+
+    const page =
+      await browser.newPage();
+
     await page.setContent(html);
 
-    const pdf = await page.pdf({ format: "A4" });
+    const pdf =
+      await page.pdf({
+        format: "A4"
+      });
+
     await browser.close();
 
     res.contentType("application/pdf");
+
     res.send(pdf);
 
   } catch (err) {
-    res.status(500).json({ error: err.message });
+
+    res.status(500).json({
+      error: err.message
+    });
+
   }
+
 };
 
 exports.createSaleEntry = async (req, res) => {
@@ -367,6 +538,42 @@ exports.getClientLedger = async (req, res) => {
       total: ledger.length,
       outstanding: balance,
       ledger
+    });
+
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+};
+
+exports.listQuotations = async (req, res) => {
+  try {
+
+    const { branch_id, status, search = "" } = req.query;
+
+    const where = {};
+
+    if (branch_id) where.branch_id = branch_id;
+
+    if (status) where.status = status;
+
+    if (search) {
+      where[Op.or] = [
+        { quotation_no: { [Op.iLike]: `%${search}%` } }
+      ];
+    }
+
+    const quotations = await Quotation.findAll({
+      where,
+      order: [["createdAt", "DESC"]],
+      include: [
+        { model: Client },
+        { model: Branch }
+      ]
+    });
+
+    res.json({
+      total: quotations.length,
+      quotations
     });
 
   } catch (err) {

@@ -965,3 +965,173 @@ exports.getAgingAnalytics = async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 };
+exports.getGlobalStockAgingDashboard = async (req, res) => {
+  try {
+
+    /* =========================
+       1️⃣ TOP STAT CARDS
+    ==========================*/
+
+    const totalItems = await Stock.sum("quantity") || 0;
+
+    const freshStocks = await Stock.sum("quantity", {
+      where: { aging: { [Op.between]: [0, 180] } }
+    }) || 0;
+
+    const critical = await Stock.sum("quantity", {
+      where: { aging: { [Op.gt]: 730 } }
+    }) || 0;
+
+    const avgAgingData = await Stock.findOne({
+      attributes: [
+        [sequelize.fn("AVG", sequelize.col("aging")), "average"]
+      ],
+      raw: true
+    });
+
+    const averageAging = parseFloat(avgAgingData?.average || 0).toFixed(2);
+
+    /* =========================
+       2️⃣ AGING DISTRIBUTION
+    ==========================*/
+
+    const agingDistribution = {
+      "0-180":
+        await Stock.sum("quantity", {
+          where: { aging: { [Op.between]: [0, 180] } }
+        }) || 0,
+
+      "181-365":
+        await Stock.sum("quantity", {
+          where: { aging: { [Op.between]: [181, 365] } }
+        }) || 0,
+
+      "366-730":
+        await Stock.sum("quantity", {
+          where: { aging: { [Op.between]: [366, 730] } }
+        }) || 0,
+
+      "730+":
+        await Stock.sum("quantity", {
+          where: { aging: { [Op.gt]: 730 } }
+        }) || 0
+    };
+
+    /* =========================
+       3️⃣ AGING BY CATEGORY
+    ==========================*/
+
+    const agingByCategory = await Stock.findAll({
+      attributes: [
+        "category",
+        [sequelize.fn("SUM", sequelize.col("quantity")), "totalQuantity"],
+        [sequelize.fn("AVG", sequelize.col("aging")), "averageAging"]
+      ],
+      group: ["category"],
+      raw: true
+    });
+
+    /* =========================
+       4️⃣ TABLE DATA
+    ==========================*/
+
+    const inventory = await Stock.findAll({
+      limit: 50,
+      order: [["createdAt", "DESC"]],
+      raw: true
+    });
+
+    res.json({
+      stats: {
+        totalItems,
+        freshStocks,
+        critical,
+        averageAging
+      },
+      charts: {
+        agingDistribution,
+        agingByCategory
+      },
+      table: inventory
+    });
+
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+};
+exports.getReportsAndAnalytics = async (req, res) => {
+  try {
+
+    /* =========================
+       1️⃣ DASHBOARD CARDS
+    ==========================*/
+
+    // Total Stock Quantity
+    const totalStockItems = await Stock.sum("quantity") || 0;
+
+    // Low Stock (quantity < 10)
+    const lowStockItems = await Stock.count({
+      where: {
+        quantity: { [Op.lt]: 10 }
+      }
+    }) || 0;
+
+    // Damaged Stock (considered Scrap)
+    const totalScrapItems = await Stock.sum("quantity", {
+      where: { status: "DAMAGED" }
+    }) || 0;
+
+    // Repairable Items (optional card)
+    const totalRepairableItems = await Stock.sum("quantity", {
+      where: { status: "REPAIRABLE" }
+    }) || 0;
+
+
+    /* =========================
+       2️⃣ CATEGORY DISTRIBUTION
+    ==========================*/
+
+    const categoryDistribution = await Stock.findAll({
+      attributes: [
+        "category",
+        [sequelize.fn("SUM", sequelize.col("quantity")), "total"]
+      ],
+      group: ["category"],
+      raw: true
+    });
+
+
+    /* =========================
+       3️⃣ MONTHLY STOCK MOVEMENT
+       (Based on createdAt)
+    ==========================*/
+
+    const movementData = await Stock.findAll({
+      attributes: [
+        [sequelize.fn("DATE_TRUNC", "month", sequelize.col("createdAt")), "month"],
+        [sequelize.fn("SUM", sequelize.col("quantity")), "total"]
+      ],
+      group: ["month"],
+      order: [[sequelize.literal("month"), "ASC"]],
+      raw: true
+    });
+
+    res.json({
+      cards: {
+        totalStockItems,
+        lowStockItems,
+        totalScrapItems,
+        totalRepairableItems
+      },
+      charts: {
+        categoryDistribution,
+        monthlyStock: movementData
+      }
+    });
+
+  } catch (error) {
+    res.status(500).json({
+      error: error.message
+    });
+  }
+};

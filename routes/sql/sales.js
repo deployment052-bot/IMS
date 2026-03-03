@@ -10,10 +10,12 @@ const checkRole = require("../../middleware/role");
 
 router.post("/clients-create", auth, checkRole(["sales_manager","admin","super_admin"]), salemanager.createClient);
 router.get("/clients", auth, checkRole(["sales_manager","admin","finance","super_stock_manager"]), salemanager.listClients);
-
+router.post('/qt-gen',auth,checkRole(["sales_manager","admin"]),salemanager.createQuotation)
 router.post("/ledger/sale", auth, checkRole(["sales_manager","admin"]), salemanager.createSaleEntry);
 router.post("/ledger/payment", auth, checkRole(["sales_manager","admin","finance"]), salemanager.addClientPayment);
 
 router.get("/ledger/:clientId", auth, checkRole(["sales_manager","admin","finance","super_stock_manager","super_admin"]), salemanager.getClientLedger);
+router.post('/gt/:id',auth,checkRole(["sales_manager","admin","super_admin"]),salemanager.convertQuotationToInvoice)
+router.get("/get", auth, checkRole(["sales_manager","admin","finance","super_stock_manager","super_admin"]), salemanager.listQuotations);
 
 module.exports=router;

@@ -1,73 +1,71 @@
-// models/Quotation.js
 const { DataTypes } = require("sequelize");
 const sequelize = require("../../config/sqlcon");
 
 const Quotation = sequelize.define("Quotation", {
-  client_id: {
-    type: DataTypes.INTEGER,
-    allowNull: false,
-  },
-  branch_id: {
-    type: DataTypes.INTEGER,
-    allowNull: false,
-  },
-  total_amount: {
-    type: DataTypes.FLOAT,
-    allowNull: false,
-  },
-  gst_amount: {
-    type: DataTypes.FLOAT,
-    allowNull: true,
-  },
+
+  quotation_no: DataTypes.STRING,   
+
+  client_id: DataTypes.INTEGER,
+
+  branch_id: DataTypes.INTEGER,
+
+  total_amount: DataTypes.FLOAT,
+
+  gst_amount: DataTypes.FLOAT,
+
+  valid_till: DataTypes.DATE,       
+
+  reference_no: DataTypes.STRING,   
+
+  terms: DataTypes.TEXT,
+
+  notes: DataTypes.TEXT,
+
   status: {
-    type: DataTypes.ENUM("pending", "approved", "rejected"),
+    type: DataTypes.ENUM(
+      "pending",
+      "approved",
+      "rejected",
+      "invoiced"
+    ),
     defaultValue: "pending",
   },
-  
+
 }, {
   tableName: "quotations",
   timestamps: true,
 });
 
-module.exports = Quotation;
-
-
-// models/QuotationItem.js
-const { DataTypes } = require("sequelize");
-const sequelize = require("../../config/sqlcon");
-const Quotation = require("./Quotation");
-
 const QuotationItem = sequelize.define("QuotationItem", {
-  quotation_id: {
-    type: DataTypes.INTEGER,
-    allowNull: false,
-  },
-  product_name: {
-    type: DataTypes.STRING,
-    allowNull: false,
-  },
-  quantity: {
-    type: DataTypes.INTEGER,
-    allowNull: false,
-  },
-  unit_price: {
-    type: DataTypes.FLOAT,
-    allowNull: false,
-  },
-  specifications: {
-    type: DataTypes.TEXT,
-    allowNull: true,
-  },
-  subtotal: {
-    type: DataTypes.FLOAT,
-    allowNull: false,
-  },
+
+  quotation_id: DataTypes.INTEGER,
+
+  product_name: DataTypes.STRING,
+
+  quantity: DataTypes.INTEGER,
+
+  unit_price: DataTypes.FLOAT,
+
+  unit: DataTypes.STRING,      
+
+  hsn: DataTypes.STRING,      
+
+  cgst: DataTypes.FLOAT,
+
+  sgst: DataTypes.FLOAT,
+
+  subtotal: DataTypes.FLOAT,
+
+  amount: DataTypes.FLOAT
+
 }, {
   tableName: "quotation_items",
   timestamps: true,
 });
 
-Quotation.hasMany(QuotationItem, { foreignKey: "quotation_id", as: "items" });
-QuotationItem.belongsTo(Quotation, { foreignKey: "quotation_id" });
 
-module.exports = QuotationItem;
+
+module.exports = {
+  Quotation,
+  QuotationItem
+};

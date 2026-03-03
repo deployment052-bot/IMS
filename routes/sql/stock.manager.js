@@ -5,7 +5,7 @@ const {
   getStockLocations,
   getBranchesByLocation,
   getBranchDashboard,
-  updateStockQuantity,  getStockManagerHeadDashboard,getSuperStockManagerDashboard,getSuperBranchDashboard,getItemBranchAnalytics,getAgingAnalytics,getSuperStockManagerLocationDashboard,getAllStatesDashboard
+  updateStockQuantity,  getStockManagerHeadDashboard,getSuperStockManagerDashboard,getSuperBranchDashboard,getItemBranchAnalytics,getAgingAnalytics,getSuperStockManagerLocationDashboard,getAllStatesDashboard,getGlobalStockAgingDashboard, getReportsAndAnalytics
 
 } = require("../../controllers/sqlbase/manager/stock.manager");
 
@@ -80,6 +80,19 @@ router.get(
   checkRole(["stock_manager","super_stock_manager"]),
   getSuperStockManagerLocationDashboard
 
+);
+
+router.get(
+  "/aging-global",
+  auth,
+  checkRole(["super_stock_manager"]),
+  getGlobalStockAgingDashboard
+);
+router.get(
+  "/reports-analytics",
+  auth,
+  checkRole(["super_stock_manager"]),
+  getReportsAndAnalytics
 );
 // getSuperStockManagerLocationDashboard
 

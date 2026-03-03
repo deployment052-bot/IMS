@@ -1,6 +1,58 @@
-const { Op } = require("sequelize");
-const {Client,ClientLedger,Branch, Quotation, QuotationItem,sequelize} = require("../../../model/SQL_Model");
+const {
+  Client,
+  ClientLedger,
+  Branch,
+  Quotation,
+  QuotationItem,
+  Stock,
+  Ledger,
+  sequelize
+} = require("../../../model/SQL_Model");
+
 const puppeteer = require("puppeteer");
+
+const { quotationHTML } = require("../../../utils/qt");
+const { invoiceHTML } = require("../../../utils/invoice");
+const getOrCreateClient = async (data, t) => {
+
+  let client = await Client.findOne({
+    where: {
+      phone: data.phone,
+      branch_id: data.branch_id
+    },
+    transaction: t
+  });
+
+  if (client) return client;
+
+  const last = await Client.findOne({
+    where: { branch_id: data.branch_id },
+    order: [["createdAt", "DESC"]],
+    transaction: t
+  });
+
+  let next = 1;
+
+  if (last?.client_code) {
+    next =
+      Number(last.client_code.split("-")[1]) + 1;
+  }
+
+  const code =
+    `BR${data.branch_id}-${String(next).padStart(4, "0")}`;
+
+  client = await Client.create({
+    name: data.name,
+    phone: data.phone,
+    email: data.email,
+    address: data.address,
+    branch_id: data.branch_id,
+    gst_number: data.gst_number,
+    client_code: code
+  }, { transaction: t });
+
+  return client;
+};
 exports.createClient = async (req, res) => {
   const t = await sequelize.transaction();
 
@@ -74,6 +126,7 @@ exports.listClients = async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 };
+
 exports.createQuotation = async (req, res) => {
 
   const t = await sequelize.transaction();
@@ -84,29 +137,62 @@ exports.createQuotation = async (req, res) => {
       client,
       branch_id,
       products,
-      gst_percent = 0
+      gst_percent = 0,
+      valid_till
     } = req.body;
 
-    if (!branch_id || !products) {
-      return res.status(400).json({
-        error: "branch_id & products required"
-      });
-    }
 
-
-    // ✅ client auto create / get
+    // =========================
+    // CLIENT
+    // =========================
 
     const clientData =
-      await exports.getOrCreateClient(
-        {
-          ...client,
-          branch_id
-        },
+      await getOrCreateClient(
+        { ...client, branch_id },
         t
       );
 
 
-    // ✅ quotation number
+    // =========================
+    // STOCK VALIDATION
+    // =========================
+
+    for (const p of products) {
+
+      const stock = await Stock.findOne({
+        where: {
+          name: p.product_name,
+          branch_id
+        },
+        transaction: t
+      });
+
+      if (!stock) {
+
+        await t.rollback();
+
+        return res.status(400).json({
+          error: `Stock not found for ${p.product_name}`
+        });
+
+      }
+
+      if (stock.quantity < p.quantity) {
+
+        await t.rollback();
+
+        return res.status(400).json({
+          error: `Not enough stock for ${p.product_name}`
+        });
+
+      }
+
+    }
+
+
+    // =========================
+    // QUOTATION NO
+    // =========================
 
     const last = await Quotation.findOne({
       where: { branch_id },
@@ -117,27 +203,26 @@ exports.createQuotation = async (req, res) => {
 
     let next = 1;
 
-    if (last && last.quotation_no) {
-      next =
-        Number(
-          last.quotation_no.split("-")[2]
-        ) + 1;
+    if (last?.quotation_no) {
+
+      const parts =
+        last.quotation_no.split("-");
+
+      next = Number(parts[2]) + 1;
     }
 
     const quotation_no =
       `QT-${branch_id}-${String(next).padStart(4, "0")}`;
 
 
-    // ✅ total
+    // =========================
+    // TOTAL CALC
+    // =========================
 
     let subtotal = 0;
 
     for (const p of products) {
-
-      subtotal +=
-        p.quantity *
-        p.unit_price;
-
+      subtotal += p.quantity * p.unit_price;
     }
 
     const gst_amount =
@@ -147,7 +232,9 @@ exports.createQuotation = async (req, res) => {
       subtotal + gst_amount;
 
 
-    // ✅ create quotation
+    // =========================
+    // CREATE QUOTATION
+    // =========================
 
     const quotation =
       await Quotation.create({
@@ -159,14 +246,28 @@ exports.createQuotation = async (req, res) => {
         total_amount: grand_total,
         gst_amount,
 
+        valid_till:
+          valid_till || null,
+
         status: "pending"
 
       }, { transaction: t });
 
 
-    // ✅ items
+    // =========================
+    // CREATE ITEMS
+    // =========================
 
     for (const p of products) {
+
+      const itemTotal =
+        p.quantity * p.unit_price;
+
+      const cgst =
+        (itemTotal * gst_percent) / 200;
+
+      const sgst =
+        (itemTotal * gst_percent) / 200;
 
       await QuotationItem.create({
 
@@ -178,21 +279,80 @@ exports.createQuotation = async (req, res) => {
 
         unit_price: p.unit_price,
 
-        subtotal:
-          p.quantity *
-          p.unit_price
+        unit: p.unit || "",
+
+        hsn: p.hsn || "",
+
+        cgst,
+
+        sgst,
+
+        subtotal: itemTotal,
+
+        amount:
+          itemTotal + cgst + sgst
 
       }, { transaction: t });
 
     }
 
-
     await t.commit();
 
-    res.json({
-      message: "QT created",
-      quotation
+
+    // =========================
+    // GET DATA FOR PDF
+    // =========================
+
+    const branch =
+      await Branch.findByPk(branch_id);
+
+    const items =
+      await QuotationItem.findAll({
+        where: {
+          quotation_id: quotation.id
+        }
+      });
+
+
+    const html =
+      quotationHTML({
+        branch,
+        quotation,
+        client: clientData,
+        items
+      });
+
+
+    // =========================
+    // PDF
+    // =========================
+
+    const browser =
+      await puppeteer.launch();
+
+    const page =
+      await browser.newPage();
+
+    await page.setContent(html, {
+      waitUntil: "networkidle0"
     });
+
+    const pdf =
+      await page.pdf({
+        format: "A4",
+        printBackground: true
+      });
+
+    await browser.close();
+
+
+    res.set({
+      "Content-Type": "application/pdf",
+      "Content-Disposition":
+        "inline; filename=quotation.pdf"
+    });
+
+    return res.send(pdf);
 
   }
   catch (err) {
@@ -207,7 +367,6 @@ exports.createQuotation = async (req, res) => {
 
 };
 
-
 exports.convertQuotationToInvoice = async (req, res) => {
 
   const t = await sequelize.transaction();
@@ -216,55 +375,197 @@ exports.convertQuotationToInvoice = async (req, res) => {
 
     const { id } = req.params;
 
-    const q =
-      await Quotation.findByPk(id);
+    const quotation = await Quotation.findByPk(id, {
+      transaction: t
+    });
 
-    if (!q)
+    if (!quotation) {
+      await t.rollback();
       return res.status(404).json({
-        error: "Not found"
+        error: "Quotation not found"
       });
+    }
 
-    if (q.status !== "approved")
+    if (quotation.status !== "approved") {
+      await t.rollback();
       return res.status(400).json({
-        error: "Approve first"
+        error: "Quotation not approved"
+      });
+    }
+
+
+    // =====================
+    // GET ITEMS
+    // =====================
+
+    const items = await QuotationItem.findAll({
+      where: {
+        quotation_id: id
+      },
+      transaction: t
+    });
+
+
+    // =====================
+    // REDUCE STOCK + LEDGER
+    // =====================
+
+    for (const it of items) {
+
+      const stock = await Stock.findOne({
+        where: {
+          name: it.product_name,
+          branch_id: quotation.branch_id
+        },
+        transaction: t
       });
 
+      if (!stock) {
+        await t.rollback();
+        return res.status(400).json({
+          error: `Stock not found ${it.product_name}`
+        });
+      }
 
-    // ✅ status change
+      if (stock.quantity < it.quantity) {
+        await t.rollback();
+        return res.status(400).json({
+          error: `Not enough stock ${it.product_name}`
+        });
+      }
 
-    q.status = "invoiced";
+      stock.quantity -= it.quantity;
 
-    await q.save({ transaction: t });
+      await stock.save({ transaction: t });
 
 
-    // ✅ ledger entry
+      await Ledger.create({
+
+        branch_id: quotation.branch_id,
+
+        stock_id: stock.id,
+
+        type: "SALE",
+
+        quantity: it.quantity,
+
+        rate: it.unit_price,
+
+        total: it.subtotal,
+
+        reference_no: quotation.quotation_no
+
+      }, { transaction: t });
+
+    }
+
+
+    // =====================
+    // CLIENT LEDGER
+    // =====================
 
     await ClientLedger.create({
 
-      client_id: q.client_id,
+      client_id: quotation.client_id,
 
-      branch_id: q.branch_id,
+      branch_id: quotation.branch_id,
 
       type: "SALE",
 
-      invoice_no:
-        q.quotation_no,
+      amount: quotation.total_amount,
 
-      amount:
-        q.total_amount,
+      invoice_no: quotation.quotation_no,
 
-      remark:
-        "Invoice from QT"
+      remark: "Invoice"
 
     }, { transaction: t });
 
 
+    // =====================
+    // CREATE INVOICE OBJECT
+    // =====================
+
+    const invoice = {
+      invoice_no: "INV-" + quotation.quotation_no,
+      quotation_no: quotation.quotation_no,
+      total_amount: quotation.total_amount,
+      gst_amount: quotation.gst_amount,
+      status: "created",
+      createdAt: new Date()
+    };
+
+
+    quotation.status = "invoiced";
+
+    await quotation.save({ transaction: t });
+
+
     await t.commit();
 
-    res.json({
-      message:
-        "Invoice created"
+
+    // =====================
+    // GET CLIENT + BRANCH
+    // =====================
+
+    const client =
+      await Client.findByPk(
+        quotation.client_id
+      );
+
+    const branch =
+      await Branch.findByPk(
+        quotation.branch_id
+      );
+
+
+    // =====================
+    // HTML
+    // =====================
+
+    const html = invoiceHTML({
+
+      branch,
+      invoice,
+      client,
+      items
+
     });
+
+
+    // =====================
+    // PDF
+    // =====================
+
+    const browser =
+      await puppeteer.launch();
+
+    const page =
+      await browser.newPage();
+
+    await page.setContent(html, {
+      waitUntil: "networkidle0"
+    });
+
+    const pdf =
+      await page.pdf({
+        format: "A4",
+        printBackground: true
+      });
+
+    await browser.close();
+
+
+    // =====================
+    // SHOW PDF
+    // =====================
+
+    res.set({
+      "Content-Type": "application/pdf",
+      "Content-Disposition":
+        "inline; filename=invoice.pdf"
+    });
+
+    return res.send(pdf);
 
   }
   catch (err) {
@@ -306,27 +607,19 @@ exports.generateQuotationPDF = async (req, res) => {
 
     const { quotation_id } = req.params;
 
-    const quotation =
-      await Quotation.findByPk(
-        quotation_id,
-        {
-          include: [
-            { model: Client },
-            { model: Branch }
-          ]
-        }
-      );
+    const quotation = await Quotation.findByPk(
+      quotation_id,
+      {
+        include: [Client, Branch]
+      }
+    );
 
-    const items =
-      await QuotationItem.findAll({
-        where: { quotation_id }
-      });
+    const items = await QuotationItem.findAll({
+      where: { quotation_id }
+    });
 
-    const client =
-      quotation.Client;
-
-    const branch =
-      quotation.Branch;
+    const client = quotation.Client;
+    const branch = quotation.Branch;
 
     let rows = "";
 
@@ -336,9 +629,14 @@ exports.generateQuotationPDF = async (req, res) => {
       <tr>
         <td>${i + 1}</td>
         <td>${it.product_name}</td>
+        <td>${it.hsn}</td>
         <td>${it.quantity}</td>
+        <td>${it.unit}</td>
         <td>${it.unit_price}</td>
         <td>${it.subtotal}</td>
+        <td>${it.cgst}</td>
+        <td>${it.sgst}</td>
+        <td>${it.amount}</td>
       </tr>
       `;
 
@@ -347,69 +645,52 @@ exports.generateQuotationPDF = async (req, res) => {
 
     const html = `
 
-    <html>
-    <body>
-
     <h2>${branch.name}</h2>
     <p>${branch.address}</p>
+    <p>GST : ${branch.gst}</p>
 
-    <hr/>
+    <h3>QUOTATION</h3>
 
-    <h3>Quotation</h3>
+    <p>No : ${quotation.quotation_no}</p>
+    <p>Date : ${quotation.createdAt.toDateString()}</p>
 
-    <p>No: ${quotation.quotation_no}</p>
-
-    <p>Date:
-    ${quotation.createdAt.toDateString()}
-    </p>
-
-    <h4>Client</h4>
-
+    <h4>Billing</h4>
     <p>${client.name}</p>
     <p>${client.address}</p>
 
     <table border="1" width="100%">
-
     <tr>
-      <th>#</th>
-      <th>Item</th>
-      <th>Qty</th>
-      <th>Rate</th>
-      <th>Total</th>
+    <th>#</th>
+    <th>Item</th>
+    <th>HSN</th>
+    <th>Qty</th>
+    <th>Unit</th>
+    <th>Rate</th>
+    <th>Taxable</th>
+    <th>CGST</th>
+    <th>SGST</th>
+    <th>Total</th>
     </tr>
 
     ${rows}
 
     </table>
 
-    <h3>
-    Total:
-    ${quotation.total_amount}
-    </h3>
-
-    <h3>
-    GST:
-    ${quotation.gst_amount}
-    </h3>
-
-    </body>
-    </html>
+    <h3>Total : ${quotation.total_amount}</h3>
+    <h3>GST : ${quotation.gst_amount}</h3>
 
     `;
 
 
-    const browser =
-      await puppeteer.launch();
+    const browser = await puppeteer.launch();
 
-    const page =
-      await browser.newPage();
+    const page = await browser.newPage();
 
     await page.setContent(html);
 
-    const pdf =
-      await page.pdf({
-        format: "A4"
-      });
+    const pdf = await page.pdf({
+      format: "A4"
+    });
 
     await browser.close();
 
@@ -462,9 +743,7 @@ exports.createSaleEntry = async (req, res) => {
   }
 };
 
-/* =========================
-   3) PAYMENT -> LEDGER PAYMENT ENTRY
-========================= */
+
 
 exports.addClientPayment = async (req, res) => {
   const t = await sequelize.transaction();
@@ -498,9 +777,6 @@ exports.addClientPayment = async (req, res) => {
   }
 };
 
-/* =========================
-   4) CLIENT LEDGER (RUNNING BALANCE)
-========================= */
 
 exports.getClientLedger = async (req, res) => {
   try {
@@ -578,5 +854,30 @@ exports.listQuotations = async (req, res) => {
 
   } catch (err) {
     res.status(500).json({ error: err.message });
+  }
+};
+exports.listQuotations = async (req, res) => {
+  try {
+
+    const quotations = await Quotation.findAll({
+      include: [
+        { model: Client, as: "client" },
+        { model: Branch, as: "branch" },
+        {
+          model: QuotationItem,
+          as: "items"
+        }
+      ],
+      order: [["createdAt", "DESC"]]
+    });
+
+    res.json(quotations);
+
+  } catch (err) {
+
+    res.status(500).json({
+      error: err.message
+    });
+
   }
 };

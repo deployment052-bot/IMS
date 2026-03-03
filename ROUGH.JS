@@ -273,3 +273,216 @@ exports.getStockManagerHeadDashboard = async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 };
+
+
+
+exports.createQuotation = async (req, res) => {
+
+  const t = await sequelize.transaction();
+
+  try {
+
+    const {
+      client,
+      branch_id,
+      products,
+      gst_percent = 0,
+      valid_till
+    } = req.body;
+
+
+    // =========================
+    // CLIENT
+    // =========================
+
+    const clientData =
+      await getOrCreateClient(
+        { ...client, branch_id },
+        t
+      );
+
+
+    // =========================
+    // QUOTATION NO
+    // =========================
+
+    const last = await Quotation.findOne({
+      where: { branch_id },
+      order: [["createdAt", "DESC"]],
+      transaction: t,
+      lock: t.LOCK.UPDATE
+    });
+
+    let next = 1;
+
+    if (last?.quotation_no) {
+
+      const parts =
+        last.quotation_no.split("-");
+
+      next = Number(parts[2]) + 1;
+    }
+
+    const quotation_no =
+      `QT-${branch_id}-${String(next).padStart(4, "0")}`;
+
+
+    // =========================
+    // TOTAL CALC
+    // =========================
+
+    let subtotal = 0;
+
+    for (const p of products) {
+      subtotal += p.quantity * p.unit_price;
+    }
+
+    const gst_amount =
+      subtotal * gst_percent / 100;
+
+    const grand_total =
+      subtotal + gst_amount;
+
+
+    // =========================
+    // CREATE QUOTATION
+    // =========================
+
+    const quotation =
+      await Quotation.create({
+
+        quotation_no,
+        client_id: clientData.id,
+        branch_id,
+
+        total_amount: grand_total,
+        gst_amount,
+
+        valid_till:
+          valid_till || null,
+
+        status: "pending"
+
+      }, { transaction: t });
+
+
+    // =========================
+    // CREATE ITEMS
+    // =========================
+
+    for (const p of products) {
+
+      const itemTotal =
+        p.quantity * p.unit_price;
+
+      const cgst =
+        (itemTotal * gst_percent) / 200;
+
+      const sgst =
+        (itemTotal * gst_percent) / 200;
+
+      await QuotationItem.create({
+
+        quotation_id: quotation.id,
+
+        product_name: p.product_name,
+
+        quantity: p.quantity,
+
+        unit_price: p.unit_price,
+
+        unit: p.unit || "",
+
+        hsn: p.hsn || "",
+
+        cgst,
+
+        sgst,
+
+        subtotal: itemTotal,
+
+        amount:
+          itemTotal + cgst + sgst
+
+      }, { transaction: t });
+
+    }
+
+    await t.commit();
+
+
+    // =========================
+    // GET DATA FOR PDF
+    // =========================
+
+    const branch =
+      await Branch.findByPk(branch_id);
+
+    const items =
+      await QuotationItem.findAll({
+        where: {
+          quotation_id: quotation.id
+        }
+      });
+
+
+    // =========================
+    // HTML TEMPLATE
+    // =========================
+
+    const html =
+      quotationHTML({
+        branch,
+        quotation,
+        client: clientData,
+        items
+      });
+
+
+    // =========================
+    // PDF
+    // =========================
+
+    const browser =
+      await puppeteer.launch();
+
+    const page =
+      await browser.newPage();
+
+    await page.setContent(html, {
+      waitUntil: "networkidle0"
+    });
+
+    const pdf =
+      await page.pdf({
+        format: "A4",
+        printBackground: true
+      });
+
+    await browser.close();
+
+
+    // =========================
+    // SHOW IN BROWSER
+    // =========================
+
+    res.set({
+      "Content-Type": "application/pdf",
+      "Content-Disposition":
+        "inline; filename=quotation.pdf"
+    });
+
+    return res.send(pdf);
+
+  }
+  catch (err) {
+
+    await t.rollback();
+
+    res.status(500).json({
+      error: err.message
+    });
+
+  }
+
+};

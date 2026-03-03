@@ -1059,37 +1059,31 @@ exports.getGlobalStockAgingDashboard = async (req, res) => {
     res.status(500).json({ error: error.message });
   }
 };
+
+
 exports.getReportsAndAnalytics = async (req, res) => {
   try {
 
-    /* =========================
-       1️⃣ DASHBOARD CARDS
-    ==========================*/
+    // 1️⃣ DASHBOARD CARDS
 
-    // Total Stock Quantity
     const totalStockItems = await Stock.sum("quantity") || 0;
 
-    // Low Stock (quantity < 10)
     const lowStockItems = await Stock.count({
       where: {
         quantity: { [Op.lt]: 10 }
       }
     }) || 0;
 
-    // Damaged Stock (considered Scrap)
     const totalScrapItems = await Stock.sum("quantity", {
       where: { status: "DAMAGED" }
     }) || 0;
 
-    // Repairable Items (optional card)
     const totalRepairableItems = await Stock.sum("quantity", {
       where: { status: "REPAIRABLE" }
     }) || 0;
 
 
-    /* =========================
-       2️⃣ CATEGORY DISTRIBUTION
-    ==========================*/
+    // 2️⃣ CATEGORY DISTRIBUTION
 
     const categoryDistribution = await Stock.findAll({
       attributes: [
@@ -1101,20 +1095,46 @@ exports.getReportsAndAnalytics = async (req, res) => {
     });
 
 
-    /* =========================
-       3️⃣ MONTHLY STOCK MOVEMENT
-       (Based on createdAt)
-    ==========================*/
+    // 3️⃣ MONTHLY STOCK MOVEMENT (Jan–Dec format)
 
-    const movementData = await Stock.findAll({
+    const currentYear = new Date().getFullYear();
+
+    const monthlyData = await Stock.findAll({
       attributes: [
-        [sequelize.fn("DATE_TRUNC", "month", sequelize.col("createdAt")), "month"],
+        [
+          sequelize.fn(
+            "EXTRACT",
+            sequelize.literal('MONTH FROM "created_at"')
+          ),
+          "month"
+        ],
         [sequelize.fn("SUM", sequelize.col("quantity")), "total"]
       ],
+      where: sequelize.where(
+        sequelize.fn(
+          "EXTRACT",
+          sequelize.literal('YEAR FROM "created_at"')
+        ),
+        currentYear
+      ),
       group: ["month"],
-      order: [[sequelize.literal("month"), "ASC"]],
       raw: true
     });
+
+    const months = [
+      "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+      "Jul", "Aug", "Sept", "Oct", "Nov", "Dec"
+    ];
+
+    const monthlyStock = Array(12).fill(0);
+
+    monthlyData.forEach(item => {
+      const index = parseInt(item.month) - 1;
+      monthlyStock[index] = parseInt(item.total);
+    });
+
+
+    // 4️⃣ SEND RESPONSE
 
     res.json({
       cards: {
@@ -1125,13 +1145,14 @@ exports.getReportsAndAnalytics = async (req, res) => {
       },
       charts: {
         categoryDistribution,
-        monthlyStock: movementData
+        stockMovement: {
+          labels: months,
+          data: monthlyStock
+        }
       }
     });
 
   } catch (error) {
-    res.status(500).json({
-      error: error.message
-    });
+    res.status(500).json({ error: error.message });
   }
 };

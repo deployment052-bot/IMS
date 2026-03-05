@@ -10,7 +10,7 @@ const {
 } = require("../../../model/SQL_Model");
 
 const puppeteer = require("puppeteer");
-
+const { generateEwayBill } = require("../../../utils/ewayService");
 const { quotationHTML } = require("../../../utils/qt");
 const { invoiceHTML } = require("../../../utils/invoice");
 const getOrCreateClient = async (data, t) => {

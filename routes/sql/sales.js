@@ -17,5 +17,6 @@ router.post("/ledger/payment", auth, checkRole(["sales_manager","admin","finance
 router.get("/ledger/:clientId", auth, checkRole(["sales_manager","admin","finance","super_stock_manager","super_admin"]), salemanager.getClientLedger);
 router.post('/gt/:id',auth,checkRole(["sales_manager","admin","super_admin"]),salemanager.convertQuotationToInvoice)
 router.get("/get", auth, checkRole(["sales_manager","admin","finance","super_stock_manager","super_admin"]), salemanager.listQuotations);
+// router.get("/getsales",auth,checkRole(["sales_manager","admin","super_admin"]),salemanager.getClientLedger)
 
 module.exports=router;

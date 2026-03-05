@@ -1064,7 +1064,7 @@ exports.getGlobalStockAgingDashboard = async (req, res) => {
 exports.getReportsAndAnalytics = async (req, res) => {
   try {
 
-    // 1️⃣ DASHBOARD CARDS
+    
 
     const totalStockItems = await Stock.sum("quantity") || 0;
 
@@ -1083,7 +1083,7 @@ exports.getReportsAndAnalytics = async (req, res) => {
     }) || 0;
 
 
-    // 2️⃣ CATEGORY DISTRIBUTION
+
 
     const categoryDistribution = await Stock.findAll({
       attributes: [
@@ -1094,8 +1094,6 @@ exports.getReportsAndAnalytics = async (req, res) => {
       raw: true
     });
 
-
-    // 3️⃣ MONTHLY STOCK MOVEMENT (Jan–Dec format)
 
     const currentYear = new Date().getFullYear();
 
@@ -1156,3 +1154,6 @@ exports.getReportsAndAnalytics = async (req, res) => {
     res.status(500).json({ error: error.message });
   }
 };
+
+
+

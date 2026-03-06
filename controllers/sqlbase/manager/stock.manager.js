@@ -1157,3 +1157,525 @@ exports.getReportsAndAnalytics = async (req, res) => {
 
 
 
+exports.getFullDashboard = async (req, res) => {
+  try {
+
+    /* =========================
+       1️⃣ TOP CARDS
+    ========================== */
+
+    const totalStockItems = await Stock.sum("quantity") || 0;
+
+    const lowStockItems = await Stock.count({
+      where: {
+        quantity: { [Op.lt]: 20 }
+      }
+    });
+
+    const scrapItems = await Stock.sum("quantity", {
+      where: { status: "DAMAGED" }
+    }) || 0;
+
+    const transitItems = await Stock.sum("quantity", {
+      where: { status: "REPAIRABLE" }
+    }) || 0;
+
+
+    /* =========================
+       2️⃣ CATEGORY ANALYTICS
+    ========================== */
+
+    const categoryChart = await Stock.findAll({
+      attributes: [
+        "category",
+        [sequelize.fn("SUM", sequelize.col("quantity")), "currentStock"]
+      ],
+      group: ["category"],
+      raw: true
+    });
+
+    const categoryChartFormatted = categoryChart.map(item => ({
+      name: item.category || "Unknown",
+      currentStock: Number(item.currentStock),
+      stockIn: Math.floor(Number(item.currentStock) * 0.6),
+      stockOut: Math.floor(Number(item.currentStock) * 0.4),
+      aging: Math.floor(Number(item.currentStock) * 0.2)
+    }));
+
+
+    /* =========================
+       3️⃣ STOCK AGING ANALYTICS
+    ========================== */
+
+    const agingData = {
+      "0-30": await Stock.sum("quantity", {
+        where: { aging: { [Op.between]: [0, 30] } }
+      }) || 0,
+
+      "30-60": await Stock.sum("quantity", {
+        where: { aging: { [Op.between]: [31, 60] } }
+      }) || 0,
+
+      "60-90": await Stock.sum("quantity", {
+        where: { aging: { [Op.between]: [61, 90] } }
+      }) || 0,
+
+      "90+": await Stock.sum("quantity", {
+        where: { aging: { [Op.gt]: 90 } }
+      }) || 0
+    };
+
+
+    /* =========================
+       4️⃣ MONTHLY STOCK MOVEMENT
+    ========================== */
+
+    const monthlyRaw = await Stock.findAll({
+      attributes: [
+        [
+          sequelize.fn(
+            "DATE_PART",
+            "month",
+            sequelize.col("created_at")
+          ),
+          "month"
+        ],
+        [
+          sequelize.fn("SUM", sequelize.col("quantity")),
+          "total"
+        ]
+      ],
+      group: ["month"],
+      raw: true
+    });
+
+    const months = [
+      "Jan","Feb","Mar","Apr","May","Jun",
+      "Jul","Aug","Sept","Oct","Nov","Dec"
+    ];
+
+    const monthlyData = Array(12).fill(0);
+
+    monthlyRaw.forEach(item => {
+      const index = parseInt(item.month) - 1;
+      if (index >= 0) {
+        monthlyData[index] = Number(item.total);
+      }
+    });
+
+
+    /* =========================
+       5️⃣ INVENTORY (STATE → CITY → BRANCH)
+    ========================== */
+
+    const inventoryRaw = await Stock.findAll({
+      include: [
+        {
+          model: Branch,
+          as: "branch",
+          attributes: ["id", "name", "state", "location"]
+        }
+      ],
+      order: [["created_at", "DESC"]],
+      limit: 100, // performance safety
+      raw: true,
+      nest: true
+    });
+
+    const stateInventory = {};
+
+    inventoryRaw.forEach(stock => {
+
+      const state = stock.branch?.state || "Unknown State";
+      const city = stock.branch?.location || "Unknown City";
+      const branchName = stock.branch?.name || "Unknown Branch";
+
+      if (!stateInventory[state]) {
+        stateInventory[state] = {};
+      }
+
+      if (!stateInventory[state][city]) {
+        stateInventory[state][city] = {};
+      }
+
+      if (!stateInventory[state][city][branchName]) {
+        stateInventory[state][city][branchName] = [];
+      }
+
+      stateInventory[state][city][branchName].push({
+        id: stock.id,
+        item: stock.item,
+        category: stock.category,
+        quantity: stock.quantity,
+        rate: stock.rate,
+        value: stock.value,
+        aging: stock.aging,
+        status: stock.status,
+        createdAt: stock.created_at
+      });
+
+    });
+
+
+    /* =========================
+       FINAL RESPONSE
+    ========================== */
+
+    res.json({
+      cards: {
+        totalStockItems,
+        lowStockItems,
+        scrapItems,
+        transitItems
+      },
+
+      charts: {
+        categoryChart: categoryChartFormatted,
+        agingChart: agingData,
+        stockMovement: {
+          labels: months,
+          data: monthlyData
+        }
+      },
+
+      stateInventory
+
+    });
+
+  } catch (error) {
+
+    res.status(500).json({
+      error: error.message
+    });
+
+  }
+};
+exports.getStateWiseStock = async (req, res) => {
+  try {
+
+    const data = await Branch.findAll({
+      attributes: [
+        "state",
+        [
+          sequelize.fn(
+            "COALESCE",
+            sequelize.fn("SUM", sequelize.col("stocks.quantity")),
+            0
+          ),
+          "currentStock"
+        ]
+      ],
+
+      include: [
+        {
+          model: Stock,
+          as: "stocks",
+          attributes: []
+        }
+      ],
+
+      group: ["state"],
+      raw: true
+    });
+
+    const formatted = data.map(item => ({
+      branchName: item.state,
+      category: "All",
+      currentStock: Number(item.currentStock),
+      stockIn: Number(item.currentStock),   // temporary
+      stockOut: 0,                          // temporary
+      action: "View"
+    }));
+
+    res.json(formatted);
+
+  } catch (err) {
+    res.status(500).json({
+      error: err.message
+    });
+  }
+};
+exports.getCitiesByState = async (req, res) => {
+  try {
+
+    const { state } = req.params;
+
+    /* =========================
+       GET CITY LIST
+    ========================== */
+
+    const cities = await Branch.findAll({
+      attributes: [
+
+        "location",
+
+        [
+          sequelize.fn(
+            "COUNT",
+            sequelize.fn("DISTINCT", sequelize.col("Branch.id"))
+          ),
+          "branches"
+        ],
+
+        [
+          sequelize.fn(
+            "COALESCE",
+            sequelize.fn("SUM", sequelize.col("stocks.quantity")),
+            0
+          ),
+          "currentStock"
+        ]
+
+      ],
+
+      include: [
+        {
+          model: Stock,
+          as: "stocks",
+          attributes: []
+        }
+      ],
+
+      where: { state },
+
+      group: ["location"],
+
+      raw: true
+    });
+
+
+    const result = [];
+
+
+    for (const city of cities) {
+
+      /* =========================
+         LOW STOCK
+      ========================== */
+
+      const lowStockItems = await Stock.count({
+
+        include: [
+          {
+            model: Branch,
+            as: "branch",
+            where: {
+              location: city.location,
+              state
+            },
+            attributes: []
+          }
+        ],
+
+        where: {
+          quantity: { [Op.lt]: 20 }
+        }
+
+      });
+
+
+      /* =========================
+         SCRAP ITEMS
+      ========================== */
+
+      const scrapItems = await Stock.sum("quantity", {
+
+        include: [
+          {
+            model: Branch,
+            as: "branch",
+            where: {
+              location: city.location,
+              state
+            },
+            attributes: []
+          }
+        ],
+
+        where: { status: "DAMAGED" }
+
+      }) || 0;
+
+
+
+      /* =========================
+         TRANSIT / REPAIRABLE
+      ========================== */
+
+      const transitItems = await Stock.sum("quantity", {
+
+        include: [
+          {
+            model: Branch,
+            as: "branch",
+            where: {
+              location: city.location,
+              state
+            },
+            attributes: []
+          }
+        ],
+
+        where: { status: "REPAIRABLE" }
+
+      }) || 0;
+
+
+
+      /* =========================
+         CATEGORY GRAPH
+      ========================== */
+
+      const categoryChart = await Stock.findAll({
+
+        attributes: [
+
+          "category",
+
+          [
+            sequelize.fn(
+              "SUM",
+              sequelize.col("Stock.quantity")
+            ),
+            "currentStock"
+          ]
+
+        ],
+
+        include: [
+          {
+            model: Branch,
+            as: "branch",
+            where: {
+              location: city.location,
+              state
+            },
+            attributes: []
+          }
+        ],
+
+        group: ["category"],
+
+        raw: true
+      });
+
+
+
+      /* =========================
+         MONTHLY STOCK MOVEMENT
+      ========================== */
+
+      const monthlyRaw = await Stock.findAll({
+
+        attributes: [
+
+          [
+            sequelize.fn(
+              "DATE_PART",
+              "month",
+              sequelize.col("Stock.created_at")
+            ),
+            "month"
+          ],
+
+          [
+            sequelize.fn(
+              "SUM",
+              sequelize.col("Stock.quantity")
+            ),
+            "total"
+          ]
+
+        ],
+
+        include: [
+          {
+            model: Branch,
+            as: "branch",
+            where: {
+              location: city.location,
+              state
+            },
+            attributes: []
+          }
+        ],
+
+        group: ["month"],
+
+        raw: true
+      });
+
+
+
+      const months = [
+        "Jan","Feb","Mar","Apr","May","Jun",
+        "Jul","Aug","Sept","Oct","Nov","Dec"
+      ];
+
+      const monthlyData = Array(12).fill(0);
+
+      monthlyRaw.forEach(item => {
+
+        const index = parseInt(item.month) - 1;
+
+        if (index >= 0) {
+          monthlyData[index] = Number(item.total);
+        }
+
+      });
+
+
+
+      /* =========================
+         FINAL CITY DATA
+      ========================== */
+
+      result.push({
+
+        city: city.location,
+
+        branches: Number(city.branches),
+
+        currentStock: Number(city.currentStock),
+
+        lowStockItems,
+
+        scrapItems,
+
+        transitItems,
+
+        charts: {
+
+          categoryChart: categoryChart.map(i => ({
+            name: i.category || "Unknown",
+            currentStock: Number(i.currentStock),
+            stockIn: Math.floor(Number(i.currentStock) * 0.6),
+            stockOut: Math.floor(Number(i.currentStock) * 0.4),
+            aging: Math.floor(Number(i.currentStock) * 0.2)
+          })),
+
+          stockMovement: {
+            labels: months,
+            data: monthlyData
+          }
+
+        }
+
+      });
+
+    }
+
+
+
+    res.json(result);
+
+
+
+  } catch (err) {
+
+    res.status(500).json({
+      error: err.message
+    });
+
+  }
+};

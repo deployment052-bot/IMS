@@ -5,7 +5,7 @@ const {
   getStockLocations,
   getBranchesByLocation,
   getBranchDashboard,
-  updateStockQuantity,  getStockManagerHeadDashboard,getSuperStockManagerDashboard,getSuperBranchDashboard,getItemBranchAnalytics,getAgingAnalytics,getSuperStockManagerLocationDashboard,getAllStatesDashboard,getGlobalStockAgingDashboard, getReportsAndAnalytics
+  updateStockQuantity,  getStockManagerHeadDashboard,getSuperStockManagerDashboard,getSuperBranchDashboard,getItemBranchAnalytics,getAgingAnalytics,getSuperStockManagerLocationDashboard,getAllStatesDashboard,getGlobalStockAgingDashboard, getReportsAndAnalytics,getFullDashboard,getStateWiseStock,getCitiesByState
 
 } = require("../../controllers/sqlbase/manager/stock.manager");
 
@@ -21,8 +21,25 @@ router.get(
   getStockLocations
 );
 
+router.get(
+  "/state",
+  auth,
+  checkRole(["stock_manager","super_stock_manager"]),
+  getStateWiseStock
+);
 
-
+router.get(
+  "/state-graph",
+  auth,
+  checkRole(["stock_manager","super_stock_manager"]),
+  getFullDashboard
+);
+router.get(
+  "/city/:state/cities",
+  auth,
+  checkRole(["stock_manager","super_stock_manager"]),
+  getCitiesByState
+);
 router.get(
   "/locations/:location",
   auth,
@@ -51,7 +68,7 @@ router.get(
 router.get(
   "/head-dashboard",
   auth,
-  checkRole(["stock_manager"]),
+  checkRole(["stock_manager","super_stock_manager"]),
   getStockManagerHeadDashboard
 );
 router.get(

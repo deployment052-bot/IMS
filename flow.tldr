@@ -1623,9 +1623,11 @@
 			"typeName": "shape"
 		},
 		{
-			"editingShapeId": null,
+			"editingShapeId": "shape:WZMXFtDjw2Rjf9cPLoW7A",
 			"croppingShapeId": null,
-			"selectedShapeIds": [],
+			"selectedShapeIds": [
+				"shape:WZMXFtDjw2Rjf9cPLoW7A"
+			],
 			"hoveredShapeId": null,
 			"erasingShapeIds": [],
 			"hintingShapeIds": [],
@@ -2221,9 +2223,9 @@
 			"typeName": "binding"
 		},
 		{
-			"x": 421.60239466987855,
-			"y": -3041.7696166807473,
-			"z": 0.6083605320971138,
+			"x": 395.61079131334634,
+			"y": -3781.4013849667517,
+			"z": 0.7155622467298419,
 			"meta": {},
 			"id": "camera:page:y-AFYHJliIKgkZOvgltZF",
 			"typeName": "camera"
@@ -2739,6 +2741,255 @@
 				"terminal": "end"
 			},
 			"typeName": "binding"
+		},
+		{
+			"x": 200.07782322961384,
+			"y": 3966.2176770386263,
+			"rotation": 0,
+			"isLocked": false,
+			"opacity": 1,
+			"meta": {},
+			"id": "shape:WZMXFtDjw2Rjf9cPLoW7A",
+			"type": "text",
+			"props": {
+				"color": "black",
+				"size": "m",
+				"w": 760.5625,
+				"font": "draw",
+				"textAlign": "start",
+				"autoSize": true,
+				"scale": 1,
+				"richText": {
+					"type": "doc",
+					"attrs": {
+						"dir": "auto"
+					},
+					"content": [
+						{
+							"type": "heading",
+							"attrs": {
+								"dir": "auto",
+								"level": 3
+							},
+							"content": [
+								{
+									"type": "text",
+									"text": "Point 1"
+								}
+							]
+						},
+						{
+							"type": "paragraph",
+							"attrs": {
+								"dir": "auto"
+							},
+							"content": [
+								{
+									"type": "text",
+									"marks": [
+										{
+											"type": "bold"
+										}
+									],
+									"text": "Load Balancing"
+								},
+								{
+									"type": "hardBreak",
+									"attrs": {
+										"dir": "auto"
+									}
+								},
+								{
+									"type": "text",
+									"text": "“Distribute traffic across multiple servers.”"
+								}
+							]
+						},
+						{
+							"type": "heading",
+							"attrs": {
+								"dir": "auto",
+								"level": 3
+							},
+							"content": [
+								{
+									"type": "text",
+									"text": "Point 2"
+								}
+							]
+						},
+						{
+							"type": "paragraph",
+							"attrs": {
+								"dir": "auto"
+							},
+							"content": [
+								{
+									"type": "text",
+									"marks": [
+										{
+											"type": "bold"
+										}
+									],
+									"text": "Caching"
+								},
+								{
+									"type": "hardBreak",
+									"attrs": {
+										"dir": "auto"
+									}
+								},
+								{
+									"type": "text",
+									"text": "“Use Redis or in-memory caching to reduce database load.”"
+								}
+							]
+						},
+						{
+							"type": "heading",
+							"attrs": {
+								"dir": "auto",
+								"level": 3
+							},
+							"content": [
+								{
+									"type": "text",
+									"text": "Point 3"
+								}
+							]
+						},
+						{
+							"type": "paragraph",
+							"attrs": {
+								"dir": "auto"
+							},
+							"content": [
+								{
+									"type": "text",
+									"marks": [
+										{
+											"type": "bold"
+										}
+									],
+									"text": "Database Optimization"
+								},
+								{
+									"type": "hardBreak",
+									"attrs": {
+										"dir": "auto"
+									}
+								},
+								{
+									"type": "text",
+									"text": "“Use indexes and optimize slow queries.”"
+								}
+							]
+						},
+						{
+							"type": "heading",
+							"attrs": {
+								"dir": "auto",
+								"level": 3
+							},
+							"content": [
+								{
+									"type": "text",
+									"text": "Point 4"
+								}
+							]
+						},
+						{
+							"type": "paragraph",
+							"attrs": {
+								"dir": "auto"
+							},
+							"content": [
+								{
+									"type": "text",
+									"marks": [
+										{
+											"type": "bold"
+										}
+									],
+									"text": "Queue System"
+								},
+								{
+									"type": "hardBreak",
+									"attrs": {
+										"dir": "auto"
+									}
+								},
+								{
+									"type": "text",
+									"text": "“Move heavy tasks to background jobs (RabbitMQ / BullMQ).”"
+								}
+							]
+						},
+						{
+							"type": "heading",
+							"attrs": {
+								"dir": "auto",
+								"level": 3
+							},
+							"content": [
+								{
+									"type": "text",
+									"text": "Point 5"
+								}
+							]
+						},
+						{
+							"type": "paragraph",
+							"attrs": {
+								"dir": "auto"
+							},
+							"content": [
+								{
+									"type": "text",
+									"marks": [
+										{
+											"type": "bold"
+										}
+									],
+									"text": "Horizontal Scaling"
+								},
+								{
+									"type": "hardBreak",
+									"attrs": {
+										"dir": "auto"
+									}
+								},
+								{
+									"type": "text",
+									"text": "“Run multiple servers instead of relying on one.”"
+								}
+							]
+						},
+						{
+							"type": "heading",
+							"attrs": {
+								"dir": "auto",
+								"level": 3
+							}
+						},
+						{
+							"type": "paragraph",
+							"attrs": {
+								"dir": "auto"
+							},
+							"content": [
+								{
+									"type": "text",
+									"text": "my deal with the new one "
+								}
+							]
+						}
+					]
+				}
+			},
+			"parentId": "page:y-AFYHJliIKgkZOvgltZF",
+			"index": "a3pWza0l",
+			"typeName": "shape"
 		},
 		{
 			"x": 619,
@@ -3519,13 +3770,11 @@
 		{
 			"followingUserId": null,
 			"opacityForNextShape": 1,
-			"stylesForNextShape": {
-				"tldraw:geo": "rectangle"
-			},
+			"stylesForNextShape": {},
 			"brush": null,
 			"scribbles": [],
 			"cursor": {
-				"type": "cross",
+				"type": "default",
 				"rotation": 0
 			},
 			"isFocusMode": false,
@@ -3536,7 +3785,7 @@
 				"x": 0,
 				"y": 0,
 				"w": 1457,
-				"h": 594
+				"h": 781
 			},
 			"insets": [
 				false,

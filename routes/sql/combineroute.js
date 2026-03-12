@@ -5,7 +5,7 @@ const {
   getInventoryDashboard,
   getInventoryDashboardCharts,
   getBranchOverview,
-  getBranchDashboard,getFullInventoryDashboard,getInventoryTable,getPurchaseSalesSummary,getPurchaseItems,getDamageStock
+  getBranchDashboard,getFullInventoryDashboard,getInventoryTable,getPurchaseSalesSummary,getPurchaseItems,getDamageStock,getStockMovements
   
 } = require("../../controllers/sqlbase/combine/combinemanager");
 
@@ -35,7 +35,7 @@ router.get("/dashboard/branches", auth,checkRole(["super_inventory_manager"]),ge
 // =====================================
 
 router.get("/dashboard/branch/:branch", getBranchDashboard);
-router.get("/inventory-table", getDamageStock);
+router.get("/inventory-table", getStockMovements);
 
 // getPurchaseSalesSummary
 

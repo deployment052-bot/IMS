@@ -670,3 +670,50 @@ exports.getAgingStock = async (req, res) => {
 
   }
 };
+
+
+
+exports.getStockMovements = async (req, res) => {
+  try {
+
+    const data = await sequelize.query(`
+
+SELECT 
+
+s.item,
+s.category,
+s.hsn,
+s.grn,
+s.po_number,
+
+sm.type AS "movementType",
+sm.quantity,
+
+s.branch_id,
+
+sm.created_at AS "movementDate"
+
+FROM stock_movements sm
+
+JOIN stocks s
+ON sm.stock_id = s.id
+
+ORDER BY sm.created_at DESC
+
+`);
+
+    res.json({
+      success: true,
+      total: data[0].length,
+      data: data[0]
+    });
+
+  } catch (err) {
+
+    res.status(500).json({
+      success: false,
+      message: err.message
+    });
+
+  }
+};

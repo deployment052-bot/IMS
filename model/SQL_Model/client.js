@@ -4,7 +4,7 @@ const sequelize = require("../../config/sqlcon");
 const Client = sequelize.define("Client", {
   name: {
     type: DataTypes.STRING,
-    allowNull: false
+    
   },
 
   phone: {

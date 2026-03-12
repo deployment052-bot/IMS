@@ -37,7 +37,7 @@ const Ledger = sequelize.define("Ledger", {
 
   total: {
     type: DataTypes.FLOAT,
-    allowNull: false
+    allowNull: false,
   },
 
   reference_no: DataTypes.STRING,

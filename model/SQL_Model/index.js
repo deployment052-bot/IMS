@@ -120,6 +120,7 @@ const initDB = async () => {
     "stock_manager",
     "sales_manager",
     "super_stock_manager",
+    "super_inventory_manager",
     "purchase_manager",
     "finance"
   ];
@@ -146,7 +147,7 @@ module.exports = {
 
   Client,
   ClientLedger,
-
+  StockMovement,
   Quotation,
   QuotationItem,
 

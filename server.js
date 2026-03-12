@@ -33,7 +33,7 @@ app.use('/stock-manager',require('./routes/sql/stock.manager'))
 app.use('/ladger',require('./routes/sql/ladgerroute'))
  
 app.use('/sales',require('./routes/sql/sales'))
-
+app.use('/combine',require('./routes/sql/combineroute'))
 // MongoDB Connection
 mongoose
   .connect(process.env.MONGO_URL)

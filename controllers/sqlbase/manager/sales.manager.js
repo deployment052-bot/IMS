@@ -13,6 +13,8 @@ const puppeteer = require("puppeteer");
 const { generateEwayBill } = require("../../../utils/ewayService");
 const { quotationHTML } = require("../../../utils/qt");
 const { invoiceHTML } = require("../../../utils/invoice");
+const { generateIRN } = require("../../../utils/taxproService");
+const { generateEinvoicePayload } = require("../../../utils/einvoicePayload");
 const getOrCreateClient = async (data, t) => {
 
   let client = await Client.findOne({
@@ -54,16 +56,35 @@ const getOrCreateClient = async (data, t) => {
   return client;
 };
 exports.createClient = async (req, res) => {
+
   const t = await sequelize.transaction();
 
   try {
-    const { name, phone, email, address, branch_id, gst_number } = req.body;
 
-    if (!name || !branch_id) {
-      return res.status(400).json({ error: "name and branch_id required" });
+    const {
+      client_type,
+      company_name,
+      contact_person,
+      phone,
+      email,
+      address,
+      city,
+      country
+    } = req.body;
+
+    const branch_id = req.user.branch_id;
+
+    if (!company_name) {
+      await t.rollback();
+      return res.status(400).json({
+        error: "Company name required"
+      });
     }
 
-    // 🔹 Last client of that branch
+    // =========================
+    // CLIENT CODE GENERATION
+    // =========================
+
     const lastClient = await Client.findOne({
       where: { branch_id },
       order: [["createdAt", "DESC"]],
@@ -73,31 +94,53 @@ exports.createClient = async (req, res) => {
 
     let nextNumber = 1;
 
-    if (lastClient && lastClient.client_code) {
-      const lastNumber = parseInt(lastClient.client_code.split("-")[1]);
+    if (lastClient?.client_code) {
+      const lastNumber =
+        parseInt(lastClient.client_code.split("-")[1]);
       nextNumber = lastNumber + 1;
     }
 
-    const client_code = `BR${branch_id}-${String(nextNumber).padStart(4, "0")}`;
+    const client_code =
+      `BR${branch_id}-${String(nextNumber).padStart(4, "0")}`;
+
+    // =========================
+    // CREATE CLIENT
+    // =========================
 
     const client = await Client.create({
-      name,
+
+      client_type,
+      company_name,
+      contact_person,
       phone,
       email,
       address,
+      city,
+      country,
+
       branch_id,
-      gst_number,
       client_code
+
     }, { transaction: t });
 
     await t.commit();
 
-    res.status(201).json({ message: "Client created", client });
+    res.status(201).json({
+      message: "Client created successfully",
+      client
+    });
 
-  } catch (err) {
-    await t.rollback();
-    res.status(500).json({ error: err.message });
   }
+  catch (err) {
+
+    await t.rollback();
+
+    res.status(500).json({
+      error: err.message
+    });
+
+  }
+
 };
 
 exports.listClients = async (req, res) => {
@@ -369,46 +412,76 @@ exports.createQuotation = async (req, res) => {
 
 exports.convertQuotationToInvoice = async (req, res) => {
 
-  const t = await sequelize.transaction();
+  let t;
 
   try {
 
     const { id } = req.params;
 
+    t = await sequelize.transaction();
+
     const quotation = await Quotation.findByPk(id, {
-      transaction: t
+      transaction: t,
+      lock: t.LOCK.UPDATE
     });
 
     if (!quotation) {
       await t.rollback();
-      return res.status(404).json({
-        error: "Quotation not found"
-      });
+      return res.status(404).json({ error: "Quotation not found" });
     }
 
     if (quotation.status !== "approved") {
       await t.rollback();
-      return res.status(400).json({
-        error: "Quotation not approved"
-      });
+      return res.status(400).json({ error: "Quotation not approved" });
     }
 
-
-    // =====================
-    // GET ITEMS
-    // =====================
-
     const items = await QuotationItem.findAll({
-      where: {
-        quotation_id: id
-      },
+      where: { quotation_id: id },
       transaction: t
     });
 
+    if (!items.length) {
+      await t.rollback();
+      return res.status(400).json({ error: "No quotation items found" });
+    }
 
-    // =====================
-    // REDUCE STOCK + LEDGER
-    // =====================
+    const client = await Client.findByPk(quotation.client_id, { transaction: t });
+    const branch = await Branch.findByPk(quotation.branch_id, { transaction: t });
+
+    if (!client) {
+      await t.rollback();
+      return res.status(404).json({ error: "Client not found" });
+    }
+
+    if (!branch) {
+      await t.rollback();
+      return res.status(404).json({ error: "Branch not found" });
+    }
+
+   
+
+    const invoice_no = "INV-" + quotation.quotation_no;
+
+    const invoice = {
+      invoice_no,
+      quotation_no: quotation.quotation_no,
+      total_amount: quotation.total_amount,
+      gst_amount: quotation.gst_amount,
+      status: "created",
+      createdAt: new Date(),
+
+      // Eway
+      eway_bill_no: null,
+      eway_bill_date: null,
+
+      // TaxPro
+      irn: null,
+      ack_no: null,
+      ack_date: null,
+      qr_code: null
+    };
+
+
 
     for (const it of items) {
 
@@ -417,162 +490,112 @@ exports.convertQuotationToInvoice = async (req, res) => {
           name: it.product_name,
           branch_id: quotation.branch_id
         },
-        transaction: t
+        transaction: t,
+        lock: t.LOCK.UPDATE
       });
 
       if (!stock) {
         await t.rollback();
-        return res.status(400).json({
-          error: `Stock not found ${it.product_name}`
-        });
+        return res.status(400).json({ error: `Stock not found ${it.product_name}` });
       }
 
-      if (stock.quantity < it.quantity) {
+      if (Number(stock.quantity) < Number(it.quantity)) {
         await t.rollback();
-        return res.status(400).json({
-          error: `Not enough stock ${it.product_name}`
-        });
+        return res.status(400).json({ error: `Not enough stock ${it.product_name}` });
       }
 
-      stock.quantity -= it.quantity;
+      stock.quantity = Number(stock.quantity) - Number(it.quantity);
 
       await stock.save({ transaction: t });
 
-
       await Ledger.create({
-
         branch_id: quotation.branch_id,
-
         stock_id: stock.id,
-
         type: "SALE",
-
-        quantity: it.quantity,
-
-        rate: it.unit_price,
-
-        total: it.subtotal,
-
-        reference_no: quotation.quotation_no
-
+        quantity: Number(it.quantity),
+        rate: Number(it.unit_price),
+        total: Number(it.subtotal),
+        reference_no: invoice_no
       }, { transaction: t });
 
     }
 
-
-    // =====================
-    // CLIENT LEDGER
-    // =====================
+ 
 
     await ClientLedger.create({
-
       client_id: quotation.client_id,
-
       branch_id: quotation.branch_id,
-
       type: "SALE",
-
-      amount: quotation.total_amount,
-
-      invoice_no: quotation.quotation_no,
-
+      amount: Number(quotation.total_amount),
+      invoice_no,
       remark: "Invoice"
-
     }, { transaction: t });
-
-
-    // =====================
-    // CREATE INVOICE OBJECT
-    // =====================
-
-    const invoice = {
-      invoice_no: "INV-" + quotation.quotation_no,
-      quotation_no: quotation.quotation_no,
-      total_amount: quotation.total_amount,
-      gst_amount: quotation.gst_amount,
-      status: "created",
-      createdAt: new Date()
-    };
-
 
     quotation.status = "invoiced";
 
     await quotation.save({ transaction: t });
 
-
     await t.commit();
 
 
-    // =====================
-    // GET CLIENT + BRANCH
-    // =====================
+try {
 
-    const client =
-      await Client.findByPk(
-        quotation.client_id
-      );
+  const payload = generateEinvoicePayload({
+    invoice,
+    client,
+    branch,
+    items
+  });
 
-    const branch =
-      await Branch.findByPk(
-        quotation.branch_id
-      );
+  const taxResponse = await generateIRN(payload);
 
+  // IRN Details
+  invoice.irn = taxResponse?.Irn || null;
+  invoice.ack_no = taxResponse?.AckNo || null;
+  invoice.ack_date = taxResponse?.AckDt || null;
+  invoice.qr_code = taxResponse?.SignedQRCode || null;
 
-    // =====================
-    // HTML
-    // =====================
+  // Eway Details (TaxPro response)
+  invoice.eway_bill_no =
+    taxResponse?.EwbNo ||
+    taxResponse?.ewayBillNo ||
+    null;
+
+  invoice.eway_bill_date =
+    taxResponse?.EwbDt ||
+    taxResponse?.ewayBillDate ||
+    null;
+
+} catch (err) {
+
+  console.log("TaxPro generation failed:", err.message);
+
+}
+
 
     const html = invoiceHTML({
-
       branch,
       invoice,
       client,
       items
-
     });
 
+   
 
-    // =====================
-    // PDF
-    // =====================
-
-    const browser =
-      await puppeteer.launch();
-
-    const page =
-      await browser.newPage();
-
-    await page.setContent(html, {
-      waitUntil: "networkidle0"
-    });
-
-    const pdf =
-      await page.pdf({
-        format: "A4",
-        printBackground: true
-      });
-
-    await browser.close();
-
-
-    // =====================
-    // SHOW PDF
-    // =====================
+    const pdf = await generatePdfFromHtml(html);
 
     res.set({
       "Content-Type": "application/pdf",
-      "Content-Disposition":
-        "inline; filename=invoice.pdf"
+      "Content-Disposition": `inline; filename=${invoice_no}.pdf`
     });
 
     return res.send(pdf);
 
-  }
-  catch (err) {
+  } catch (err) {
 
-    await t.rollback();
+    if (t) await t.rollback();
 
-    res.status(500).json({
+    return res.status(500).json({
       error: err.message
     });
 

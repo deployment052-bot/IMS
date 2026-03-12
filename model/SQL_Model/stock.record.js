@@ -53,7 +53,11 @@ const Stock = sequelize.define(
       type: DataTypes.ENUM("GOOD", "DAMAGED", "REPAIRABLE"),
       defaultValue: "GOOD",
     },
-
+     po_number:{
+      type:DataTypes.STRING,
+     allowNull:false,
+      defaultValue: "N/A",
+     },
     owner_id: {
       type: DataTypes.INTEGER,
       allowNull: false,

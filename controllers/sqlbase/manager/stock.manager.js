@@ -1,4 +1,4 @@
-const { Branch, Stock, sequelize } = require("../../../model/SQL_Model");
+const { Branch, Stock, StockMovement, sequelize } = require("../../../model/SQL_Model");
 const { Op } = require("sequelize");
 
 
@@ -878,13 +878,11 @@ exports.getAgingAnalytics = async (req, res) => {
       return res.status(400).json({ error: "Branch ID required" });
     }
 
-  
     const totalItems =
       (await Stock.sum("quantity", {
         where: { branch_id: branchId }
       })) || 0;
 
- 
     const freshStocks =
       (await Stock.sum("quantity", {
         where: {
@@ -893,7 +891,6 @@ exports.getAgingAnalytics = async (req, res) => {
         }
       })) || 0;
 
-    
     const critical =
       (await Stock.sum("quantity", {
         where: {
@@ -902,7 +899,6 @@ exports.getAgingAnalytics = async (req, res) => {
         }
       })) || 0;
 
-   
     const avgAging =
       (await Stock.findOne({
         where: { branch_id: branchId },
@@ -911,7 +907,6 @@ exports.getAgingAnalytics = async (req, res) => {
         ],
         raw: true
       })) || { average: 0 };
-
 
     const agingDistribution = {
       "0-180":
@@ -947,6 +942,43 @@ exports.getAgingAnalytics = async (req, res) => {
         })) || 0
     };
 
+    // 🔹 NEW: Aging by Category (for chart)
+    const agingByCategory = await Stock.findAll({
+      attributes: [
+        "category",
+        [
+          sequelize.fn(
+            "SUM",
+            sequelize.literal(`CASE WHEN aging BETWEEN 0 AND 180 THEN quantity ELSE 0 END`)
+          ),
+          "0-180"
+        ],
+        [
+          sequelize.fn(
+            "SUM",
+            sequelize.literal(`CASE WHEN aging BETWEEN 181 AND 365 THEN quantity ELSE 0 END`)
+          ),
+          "181-365"
+        ],
+        [
+          sequelize.fn(
+            "SUM",
+            sequelize.literal(`CASE WHEN aging BETWEEN 366 AND 730 THEN quantity ELSE 0 END`)
+          ),
+          "366-730"
+        ],
+        [
+          sequelize.fn(
+            "SUM",
+            sequelize.literal(`CASE WHEN aging > 730 THEN quantity ELSE 0 END`)
+          ),
+          "730+"
+        ]
+      ],
+      where: { branch_id: branchId },
+      group: ["category"],
+      raw: true
+    });
 
     res.json({
       branchId,
@@ -957,7 +989,8 @@ exports.getAgingAnalytics = async (req, res) => {
         averageAging: parseFloat(avgAging.average || 0).toFixed(2)
       },
       charts: {
-        agingDistribution
+        agingDistribution,
+        agingByCategory   // 🔹 only this added
       }
     });
 
@@ -1064,14 +1097,10 @@ exports.getGlobalStockAgingDashboard = async (req, res) => {
 exports.getReportsAndAnalytics = async (req, res) => {
   try {
 
-    
-
     const totalStockItems = await Stock.sum("quantity") || 0;
 
     const lowStockItems = await Stock.count({
-      where: {
-        quantity: { [Op.lt]: 10 }
-      }
+      where: { quantity: { [Op.lt]: 10 } }
     }) || 0;
 
     const totalScrapItems = await Stock.sum("quantity", {
@@ -1082,9 +1111,6 @@ exports.getReportsAndAnalytics = async (req, res) => {
       where: { status: "REPAIRABLE" }
     }) || 0;
 
-
-
-
     const categoryDistribution = await Stock.findAll({
       attributes: [
         "category",
@@ -1094,10 +1120,8 @@ exports.getReportsAndAnalytics = async (req, res) => {
       raw: true
     });
 
-
-    const currentYear = new Date().getFullYear();
-
-    const monthlyData = await Stock.findAll({
+    // ⭐ STOCK MOVEMENT TABLE USE KARO
+    const movementData = await StockMovement.findAll({
       attributes: [
         [
           sequelize.fn(
@@ -1108,31 +1132,21 @@ exports.getReportsAndAnalytics = async (req, res) => {
         ],
         [sequelize.fn("SUM", sequelize.col("quantity")), "total"]
       ],
-      where: sequelize.where(
-        sequelize.fn(
-          "EXTRACT",
-          sequelize.literal('YEAR FROM "created_at"')
-        ),
-        currentYear
-      ),
       group: ["month"],
       raw: true
     });
 
     const months = [
-      "Jan", "Feb", "Mar", "Apr", "May", "Jun",
-      "Jul", "Aug", "Sept", "Oct", "Nov", "Dec"
+      "Jan","Feb","Mar","Apr","May","Jun",
+      "Jul","Aug","Sept","Oct","Nov","Dec"
     ];
 
     const monthlyStock = Array(12).fill(0);
 
-    monthlyData.forEach(item => {
+    movementData.forEach(item => {
       const index = parseInt(item.month) - 1;
       monthlyStock[index] = parseInt(item.total);
     });
-
-
-    // 4️⃣ SEND RESPONSE
 
     res.json({
       cards: {
@@ -1154,7 +1168,6 @@ exports.getReportsAndAnalytics = async (req, res) => {
     res.status(500).json({ error: error.message });
   }
 };
-
 
 
 exports.getFullDashboard = async (req, res) => {

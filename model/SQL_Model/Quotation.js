@@ -4,7 +4,7 @@ const sequelize = require("../../config/sqlcon");
 const Quotation = sequelize.define("Quotation", {
 
   quotation_no: DataTypes.STRING,   
-
+   
   client_id: DataTypes.INTEGER,
 
   branch_id: DataTypes.INTEGER,

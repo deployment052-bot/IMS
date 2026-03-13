@@ -8,9 +8,19 @@ const app = express();
 
 // 🔥 ADD THIS
 const { initDB } = require("./model/SQL_Model");
-
+// CORS Policy
+const corsOptions = {
+  origin: [
+    "http://localhost:3000", // React local
+    "http://localhost:5173", // Vite local
+    "https://yourdomain.com" // production frontend
+  ],
+  methods: ["GET", "POST", "PUT", "DELETE", "PATCH"],
+  allowedHeaders: ["Content-Type", "Authorization"],
+  credentials: true
+};
 // Middlewares
-app.use(cors());
+app.use(cors(corsOptions));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 

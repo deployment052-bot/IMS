@@ -9,7 +9,7 @@ const Stock = sequelize.define(
       allowNull: false,
     },
 
-    category: {                      // NEW
+    category: {
       type: DataTypes.STRING,
       allowNull: true,
     },
@@ -29,35 +29,37 @@ const Stock = sequelize.define(
       allowNull: false,
     },
 
-    hsn: {                           // NEW
+    hsn: {
       type: DataTypes.STRING,
       allowNull: true,
     },
 
-    grn: {                           // NEW
+    grn: {
       type: DataTypes.STRING,
       allowNull: true,
     },
 
-    batch_no: {                      // NEW
+    batch_no: {
       type: DataTypes.STRING,
       allowNull: true,
     },
 
-    aging: {                         // NEW (days)
+    aging: {
       type: DataTypes.FLOAT,
       defaultValue: 0,
     },
 
-    status: {                        // NEW
+    status: {
       type: DataTypes.ENUM("GOOD", "DAMAGED", "REPAIRABLE"),
       defaultValue: "GOOD",
     },
-     po_number:{
-      type:DataTypes.STRING,
-     allowNull:false,
+
+    po_number: {
+      type: DataTypes.STRING,
+      allowNull: false,
       defaultValue: "N/A",
-     },
+    },
+
     owner_id: {
       type: DataTypes.INTEGER,
       allowNull: false,
@@ -77,8 +79,10 @@ const Stock = sequelize.define(
 // ===============================
 // AUTO CALCULATE VALUE
 // ===============================
-Stock.beforeCreate((s) => {
-  s.value = s.quantity * s.rate;
+Stock.beforeValidate((stock) => {
+  if (stock.quantity && stock.rate) {
+    stock.value = stock.quantity * stock.rate;
+  }
 });
 
 module.exports = Stock;

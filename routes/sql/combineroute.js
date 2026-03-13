@@ -5,7 +5,7 @@ const {
   getInventoryDashboard,
   getInventoryDashboardCharts,
   getBranchOverview,
-  getBranchDashboard,getFullInventoryDashboard,getInventoryTable,getPurchaseSalesSummary,getPurchaseItems,getDamageStock,getStockMovements
+  getBranchDashboard,getFullInventoryDashboard,getInventoryTable,getPurchaseSalesSummary,getPurchaseItems,getDamageStock,getStockMovements,getStockAgingDashboard,getReportsAnalyticsDashboard,getCompleteDashboard
   
 } = require("../../controllers/sqlbase/combine/combinemanager");
 
@@ -16,10 +16,10 @@ const checkRole = require("../../middleware/role");
 // =====================================
 
 // Table inventory data
-router.get("/dashboard/inventory",auth,checkRole(["super_inventory_manager"]), getInventoryDashboard);
+// router.get("/dashboard/inventory",auth,checkRole(["super_inventory_manager"]), getInventoryDashboard);
 
 // Charts (line + donut)
-router.get("/dashboard/charts",auth,checkRole(["super_inventory_manager"]), getInventoryDashboardCharts);
+router.get("/dashboard/charts",auth,checkRole(["stock_manager"]), getCompleteDashboard);
 
 
 // =====================================
@@ -35,7 +35,7 @@ router.get("/dashboard/branches", auth,checkRole(["super_inventory_manager"]),ge
 // =====================================
 
 router.get("/dashboard/branch/:branch", getBranchDashboard);
-router.get("/inventory-table", getStockMovements);
+router.get("/inventory-table", getPurchaseItems);
 
 // getPurchaseSalesSummary
 

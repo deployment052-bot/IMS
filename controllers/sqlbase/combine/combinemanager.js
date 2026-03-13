@@ -1,9 +1,6 @@
-const { Stock } = require("../../../model/SQL_Model");
+const { QueryTypes, Op } = require("sequelize");
 const sequelize = require("../../../config/sqlcon");
-// const { Op, QueryTypes } = require("sequelize");
-// const sequelize = require("../../../config/sqlcon");
-const { QueryTypes } = require("sequelize");
-
+const Stock = require("../../../model/SQL_Model/stock.record")
 
 // ============================
 // INVENTORY DASHBOARD
@@ -98,18 +95,22 @@ exports.getInventoryDashboardCharts = async (req, res) => {
       });
     }
 
-    // PURCHASE CHART
+    // PURCHASE AMOUNT PER MONTH
     const purchaseChart = await sequelize.query(
       `
       SELECT 
         TO_CHAR(l."createdAt",'Mon') AS month,
+        DATE_PART('month',l."createdAt") AS month_no,
         COALESCE(SUM(l.total),0) AS "purchaseAmount"
+
       FROM ledger l
       JOIN stocks s ON s.id = l.stock_id
+
       WHERE l.type='PURCHASE'
       AND s.branch_id = ANY(:branches)
-      GROUP BY TO_CHAR(l."createdAt",'Mon'), DATE_PART('month',l."createdAt")
-      ORDER BY DATE_PART('month',l."createdAt")
+
+      GROUP BY month, month_no
+      ORDER BY month_no
       `,
       {
         replacements: { branches: userBranches },
@@ -117,14 +118,14 @@ exports.getInventoryDashboardCharts = async (req, res) => {
       }
     );
 
-    // STOCK STATUS
+    // STOCK STATUS OVERVIEW
     const stockStatus = await Stock.findAll({
       where: {
         branch_id: { [Op.in]: userBranches }
       },
       attributes: [
         "status",
-        [sequelize.fn("COUNT", sequelize.col("status")), "total"]
+        [sequelize.fn("SUM", sequelize.col("quantity")), "total"]
       ],
       group: ["status"],
       raw: true
@@ -145,17 +146,23 @@ exports.getInventoryDashboardCharts = async (req, res) => {
     res.json({
       success: true,
       charts: {
-        purchaseAmountOverTime: purchaseChart,
+        purchaseAmountOverTime: purchaseChart.map(i => ({
+          month: i.month,
+          purchaseAmount: Number(i.purchaseAmount)
+        })),
         stockStatusOverview: formattedStatus
       }
     });
 
   } catch (error) {
+
     console.error(error);
+
     res.status(500).json({
       success: false,
       message: "Failed to fetch dashboard charts"
     });
+
   }
 };
 
@@ -713,6 +720,702 @@ ORDER BY sm.created_at DESC
     res.status(500).json({
       success: false,
       message: err.message
+    });
+
+  }
+};
+
+exports.getInventoryDashboard = async (req, res) => {
+  try {
+
+    const branchId = req.user?.branch_id;
+
+    // =========================
+    // CARDS DATA
+    // =========================
+    const cards = await sequelize.query(`
+
+      SELECT 
+
+      COUNT(id)::INTEGER AS "totalStockItems",
+
+      COALESCE(SUM(value),0)::INTEGER AS "totalStockValue",
+
+      COALESCE((
+        SELECT SUM(quantity)
+        FROM stock_movements
+        WHERE type='IN'
+        AND branch_id = :branchId
+      ),0)::INTEGER AS "purchaseAmount",
+
+      COALESCE((
+        SELECT COUNT(id)
+        FROM stock_movements
+        WHERE type='OUT'
+        AND branch_id = :branchId
+      ),0)::INTEGER AS "transitItems"
+
+      FROM stocks
+      WHERE branch_id = :branchId
+
+    `,{
+      replacements:{ branchId }
+    });
+
+
+    // =========================
+    // PURCHASE CHART
+    // =========================
+    const purchaseChart = await sequelize.query(`
+
+      SELECT 
+
+      TO_CHAR(created_at,'Mon') AS month,
+
+      SUM(quantity)::INTEGER AS amount
+
+      FROM stock_movements
+
+      WHERE type='IN'
+      AND branch_id = :branchId
+
+      GROUP BY month, DATE_PART('month',created_at)
+
+      ORDER BY DATE_PART('month',created_at)
+
+    `,{
+      replacements:{ branchId }
+    });
+
+
+    // =========================
+    // AGING / STATUS PIE
+    // =========================
+    const agingChart = await sequelize.query(`
+
+      SELECT 
+
+      SUM(CASE WHEN status='GOOD' THEN quantity ELSE 0 END)::INTEGER AS available,
+
+      SUM(CASE WHEN status='DAMAGED' THEN quantity ELSE 0 END)::INTEGER AS damaged,
+
+      SUM(CASE WHEN status='REPAIRABLE' THEN quantity ELSE 0 END)::INTEGER AS repairable
+
+      FROM stocks
+      WHERE branch_id = :branchId
+
+    `,{
+      replacements:{ branchId }
+    });
+
+
+    // =========================
+    // INVENTORY TABLE
+    // =========================
+    const table = await sequelize.query(`
+
+      SELECT 
+
+      s.item AS "itemName",
+      s.category AS "categories",
+      s.hsn AS "hsnCode",
+      s.grn AS "grnNo",
+      s.po_number AS "poNumber",
+
+      s.quantity AS "currentStock",
+
+      COALESCE(SUM(CASE WHEN sm.type='IN' THEN sm.quantity ELSE 0 END),0)::INTEGER AS "stockIn",
+
+      COALESCE(SUM(CASE WHEN sm.type='OUT' THEN sm.quantity ELSE 0 END),0)::INTEGER AS "stockOut",
+
+      COALESCE(SUM(CASE WHEN s.status='DAMAGED' THEN sm.quantity ELSE 0 END),0)::INTEGER AS "scrap",
+
+      s.created_at AS "dispatchDate",
+      s.updated_at AS "deliveryDate",
+
+      s.status
+
+      FROM stocks s
+
+      LEFT JOIN stock_movements sm
+      ON s.id = sm.stock_id
+
+      WHERE s.branch_id = :branchId
+
+      GROUP BY s.id
+
+      ORDER BY s.id DESC
+
+      LIMIT 50
+
+    `,{
+      replacements:{ branchId }
+    });
+
+
+    res.json({
+      success: true,
+      dashboard: {
+        cards: cards[0][0],
+        purchaseChart: purchaseChart[0],
+        agingChart: agingChart[0][0],
+        inventoryTable: table[0]
+      }
+    });
+
+  } catch (err) {
+
+    res.status(500).json({
+      success: false,
+      message: err.message
+    });
+
+  }
+};
+
+
+exports.getStockAgingDashboard = async (req, res) => {
+  try {
+
+    const branchId = req.user?.branch_id;
+
+    // =========================
+    // CARDS
+    // =========================
+    const cards = await sequelize.query(`
+
+      SELECT 
+
+      SUM(quantity)::INTEGER AS "totalItems",
+
+      SUM(
+        CASE 
+        WHEN NOW() - created_at <= INTERVAL '180 days'
+        THEN quantity ELSE 0 END
+      )::INTEGER AS "freshStocks",
+
+      SUM(
+        CASE 
+        WHEN NOW() - created_at > INTERVAL '730 days'
+        THEN quantity ELSE 0 END
+      )::INTEGER AS "critical",
+
+      ROUND(
+        AVG(
+          DATE_PART('day', NOW() - created_at)
+        )
+      )::INTEGER AS "averageAging"
+
+      FROM stocks
+      WHERE branch_id = :branchId
+
+    `,{
+      replacements:{ branchId }
+    });
+
+
+    // =========================
+    // AGING DISTRIBUTION
+    // =========================
+    const agingDistribution = await sequelize.query(`
+
+      SELECT 
+
+      SUM(
+        CASE 
+        WHEN NOW() - created_at <= INTERVAL '180 days'
+        THEN quantity ELSE 0 END
+      )::INTEGER AS "0-180",
+
+      SUM(
+        CASE 
+        WHEN NOW() - created_at > INTERVAL '180 days'
+        AND NOW() - created_at <= INTERVAL '365 days'
+        THEN quantity ELSE 0 END
+      )::INTEGER AS "181-365",
+
+      SUM(
+        CASE 
+        WHEN NOW() - created_at > INTERVAL '365 days'
+        AND NOW() - created_at <= INTERVAL '730 days'
+        THEN quantity ELSE 0 END
+      )::INTEGER AS "366-730",
+
+      SUM(
+        CASE 
+        WHEN NOW() - created_at > INTERVAL '730 days'
+        THEN quantity ELSE 0 END
+      )::INTEGER AS "730+"
+
+      FROM stocks
+      WHERE branch_id = :branchId
+
+    `,{
+      replacements:{ branchId }
+    });
+
+
+    // =========================
+    // AGING BY CATEGORY (UPDATED)
+    // =========================
+    const agingByCategory = await sequelize.query(`
+
+      SELECT 
+
+      category,
+
+      SUM(quantity)::INTEGER AS "average",
+
+      SUM(
+        CASE 
+        WHEN status = 'GOOD'
+        THEN quantity ELSE 0 END
+      )::INTEGER AS "good",
+
+      SUM(
+        CASE 
+        WHEN status = 'REPAIRABLE'
+        THEN quantity ELSE 0 END
+      )::INTEGER AS "REPAIRABLE",
+
+      SUM(
+        CASE 
+        WHEN status = 'DAMAGED'
+        THEN quantity ELSE 0 END
+      )::INTEGER AS "damaged"
+
+      FROM stocks
+
+      WHERE branch_id = :branchId
+
+      GROUP BY category
+
+      ORDER BY category
+
+    `,{
+      replacements:{ branchId }
+    });
+
+
+    // =========================
+    // TABLE DATA
+    // =========================
+    const table = await sequelize.query(`
+
+      SELECT 
+
+      po_number AS "purchaseOrderNo",
+      item AS "itemName",
+      category AS "categories",
+      branch_id AS "branch",
+      quantity,
+      value,
+
+      CASE
+        WHEN NOW() - created_at <= INTERVAL '180 days'
+        THEN 'Fresh'
+        WHEN NOW() - created_at <= INTERVAL '365 days'
+        THEN 'Normal'
+        WHEN NOW() - created_at <= INTERVAL '730 days'
+        THEN 'Slow'
+        ELSE 'Critical'
+      END AS status
+
+      FROM stocks
+
+      WHERE branch_id = :branchId
+
+      ORDER BY created_at DESC
+
+      LIMIT 50
+
+    `,{
+      replacements:{ branchId }
+    });
+
+
+    res.json({
+      success:true,
+      dashboard:{
+        cards: cards[0][0],
+        agingDistribution: agingDistribution[0][0],
+        agingByCategory: agingByCategory[0],
+        table: table[0]
+      }
+    });
+
+  } catch (err) {
+
+    res.status(500).json({
+      success:false,
+      message: err.message
+    });
+
+  }
+};
+
+exports.getReportsAnalyticsDashboard = async (req, res) => {
+  try {
+
+    const branchId = req.user?.branch_id;
+
+    // =========================
+    // CARDS
+    // =========================
+    const cards = await sequelize.query(`
+      SELECT 
+        COALESCE(SUM(value),0)::INTEGER AS "totalSpend",
+        COUNT(id)::INTEGER AS "totalPOs",
+        COALESCE(SUM(quantity),0)::INTEGER AS "totalStockItems",
+        SUM(
+          CASE 
+          WHEN quantity < 10
+          THEN 1 ELSE 0
+          END
+        )::INTEGER AS "lowStockItems"
+      FROM stocks
+      WHERE branch_id = :branchId
+    `,{
+      replacements:{ branchId }
+    });
+
+
+    // =========================
+    // MONTHLY SPEND
+    // =========================
+    const monthlySpend = await sequelize.query(`
+      SELECT 
+        TO_CHAR(created_at,'Mon') AS month,
+        SUM(value)::INTEGER AS spend
+      FROM stocks
+      WHERE branch_id = :branchId
+      GROUP BY month, DATE_PART('month',created_at)
+      ORDER BY DATE_PART('month',created_at)
+    `,{
+      replacements:{ branchId }
+    });
+
+
+    // =========================
+    // STOCK MOVEMENT TRENDS
+    // =========================
+    const stockMovement = await sequelize.query(`
+      SELECT 
+        TO_CHAR(created_at,'Mon') AS month,
+
+        SUM(
+          CASE 
+          WHEN type='IN' 
+          THEN quantity 
+          ELSE 0 
+          END
+        )::INTEGER AS "stockIn",
+
+        SUM(
+          CASE 
+          WHEN type='OUT' 
+          THEN quantity 
+          ELSE 0 
+          END
+        )::INTEGER AS "stockOut"
+
+      FROM stock_movements
+      WHERE branch_id = :branchId
+      GROUP BY month, DATE_PART('month',created_at)
+      ORDER BY DATE_PART('month',created_at)
+    `,{
+      replacements:{ branchId }
+    });
+
+
+    // =========================
+    // PURCHASE ORDER TRENDS
+    // (Derived from stock status)
+    // =========================
+    const purchaseOrderTrends = await sequelize.query(`
+      SELECT 
+
+        category,
+
+        SUM(
+          CASE 
+          WHEN status='GOOD'
+          THEN quantity 
+          ELSE 0 
+          END
+        )::INTEGER AS approved,
+
+        SUM(
+          CASE 
+          WHEN status='REPAIRABLE'
+          THEN quantity 
+          ELSE 0 
+          END
+        )::INTEGER AS pending,
+
+        SUM(
+          CASE 
+          WHEN status='DAMAGED'
+          THEN quantity 
+          ELSE 0 
+          END
+        )::INTEGER AS rejected
+
+      FROM stocks
+      WHERE branch_id = :branchId
+      GROUP BY category
+    `,{
+      replacements:{ branchId }
+    });
+
+
+    // =========================
+    // CATEGORY DISTRIBUTION
+    // =========================
+    const categoryDistribution = await sequelize.query(`
+      SELECT 
+        category,
+        SUM(quantity)::INTEGER AS total
+      FROM stocks
+      WHERE branch_id = :branchId
+      GROUP BY category
+      ORDER BY total DESC
+    `,{
+      replacements:{ branchId }
+    });
+
+
+    res.json({
+      success: true,
+      dashboard: {
+        cards: cards[0][0],
+        monthlySpend: monthlySpend[0],
+        stockMovement: stockMovement[0],
+        purchaseOrderTrends: purchaseOrderTrends[0],
+        categoryDistribution: categoryDistribution[0]
+      }
+    });
+
+  } catch (err) {
+
+    res.status(500).json({
+      success:false,
+      message: err.message
+    });
+
+  }
+};
+
+exports.getBranchLedger = async (req, res) => {
+  try {
+
+    const branchId = req.user.branch_id;
+
+    const data = await Ledger.findAll({
+      where: { branch_id: branchId },
+      order: [["createdAt", "DESC"]]
+    });
+
+    res.json({
+      success: true,
+      data
+    });
+
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: error.message
+    });
+  }
+};
+
+exports.getCompleteDashboard = async (req, res) => {
+  try {
+
+    const branchId = req.user?.branch_id;
+
+    // ======================
+    // CARDS (STOCK SUMMARY)
+    // ======================
+    const cards = await sequelize.query(`
+      SELECT 
+
+      COALESCE(SUM(value),0)::DECIMAL(12,2) AS "totalStockValue",
+
+      COALESCE(SUM(
+        CASE 
+        WHEN status='GOOD'
+        THEN value ELSE 0 END
+      ),0)::DECIMAL(12,2) AS "totalGoodStock",
+
+      COALESCE(SUM(
+        CASE 
+        WHEN status='REPAIRABLE'
+        THEN value ELSE 0 END
+      ),0)::DECIMAL(12,2) AS "repairableStock",
+
+      COALESCE(SUM(
+        CASE 
+        WHEN status='DAMAGED'
+        THEN value ELSE 0 END
+      ),0)::DECIMAL(12,2) AS "damagedStock"
+
+      FROM stocks
+
+      WHERE branch_id = :branchId
+    `,{
+      replacements:{ branchId }
+    });
+
+
+    // ======================
+    // MONTHLY CASHFLOW
+    // ======================
+    const monthlyCashflow = await sequelize.query(`
+      SELECT 
+
+      TO_CHAR(created_at,'Mon') AS month,
+
+      COALESCE(SUM(value),0)::DECIMAL(12,2) AS amount
+
+      FROM stocks
+
+      WHERE branch_id = :branchId
+
+      GROUP BY month, DATE_PART('month',created_at)
+
+      ORDER BY DATE_PART('month',created_at)
+    `,{
+      replacements:{ branchId }
+    });
+
+
+    // ======================
+    // CATEGORY DISTRIBUTION
+    // ======================
+    const categoryDistribution = await sequelize.query(`
+      SELECT 
+
+      category,
+
+      SUM(quantity)::INTEGER AS total
+
+      FROM stocks
+
+      WHERE branch_id = :branchId
+
+      GROUP BY category
+
+      ORDER BY total DESC
+    `,{
+      replacements:{ branchId }
+    });
+
+
+    // ======================
+    // CLIENT TABLE
+    // ======================
+    const clients = await sequelize.query(`
+      SELECT
+
+      c.name AS "vendorName",
+      c.email,
+      c.phone,
+      c.gst_number AS "gstNumber",
+
+      COALESCE(SUM(
+        CASE 
+        WHEN l.type='SALE'
+        THEN l.amount ELSE 0 END
+      ),0)::DECIMAL(12,2) AS "totalAmount",
+
+      COALESCE(
+        SUM(
+          CASE 
+          WHEN l.type='SALE'
+          THEN l.amount ELSE 0 END
+        )
+        -
+        SUM(
+          CASE 
+          WHEN l.type='PAYMENT'
+          THEN l.amount ELSE 0 END
+        )
+      ,0)::DECIMAL(12,2) AS "pendingAmount"
+
+      FROM clients c
+
+      LEFT JOIN client_ledger l
+      ON c.id = l.client_id
+
+      WHERE c.branch_id = :branchId
+
+      GROUP BY 
+      c.id,
+      c.name,
+      c.email,
+      c.phone,
+      c.gst_number
+
+      ORDER BY c.name
+
+      LIMIT 50
+    `,{
+      replacements:{ branchId }
+    });
+
+
+    // ======================
+    // STOCK TABLE
+    // ======================
+    const table = await sequelize.query(`
+      SELECT 
+
+      po_number AS "purchaseOrderNo",
+      item AS "itemName",
+      category AS "categories",
+      branch_id AS "branch",
+      quantity,
+      value,
+
+      CASE
+        WHEN aging <= 180 THEN 'Fresh'
+        WHEN aging <= 365 THEN 'Normal'
+        WHEN aging <= 730 THEN 'Slow'
+        ELSE 'Critical'
+      END AS status
+
+      FROM stocks
+
+      WHERE branch_id = :branchId
+
+      ORDER BY created_at DESC
+
+      LIMIT 50
+    `,{
+      replacements:{ branchId }
+    });
+
+
+    // ======================
+    // FINAL RESPONSE
+    // ======================
+    res.json({
+      success:true,
+      dashboard:{
+        cards: cards[0][0],
+        monthlyCashflow: monthlyCashflow[0],
+        categoryDistribution: categoryDistribution[0],
+        clients: clients[0],
+        // table: table[0]
+      }
+    });
+
+  } catch (error) {
+
+    res.status(500).json({
+      success:false,
+      message:error.message
     });
 
   }

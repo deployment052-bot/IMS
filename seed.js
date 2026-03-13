@@ -1,85 +1,158 @@
+// seed.js
+
 const sequelize = require("./config/sqlcon");
-const Stock = require("./model/SQL_Model/stock.record");
-const StockMovement = require("./model/SQL_Model/stockmovement");
 
-const branches = [
-  1,2,3,4,
-  5,6,7,8,
-  9,10,11,12,
-  13,14,15,16,
-  17,18,19,20,
-  21,22,23,24
-];
-
-const items = [
-  { name: "LED TV", category: "Electronics", rate: 12000, hsn: "8528" },
-  { name: "Office Chair", category: "Furniture", rate: 2500, hsn: "9401" },
-  { name: "Laptop", category: "Electronics", rate: 55000, hsn: "8471" },
-  { name: "Printer", category: "Electronics", rate: 8000, hsn: "8443" },
-  { name: "AC Unit", category: "Electronics", rate: 32000, hsn: "8415" },
-];
+const Ledger = require("./model/SQL_Model/ladger");
+const ClientLedger = require("./model/SQL_Model/client.ladger");
+const Client = require("./model/SQL_Model/client");
 
 async function seedData() {
 
-  for (const branch of branches) {
+  try {
 
-    for (const item of items) {
+    await sequelize.authenticate();
+    console.log("DB Connected");
 
-      const qty = Math.floor(Math.random() * 200) + 20;
+    await sequelize.sync({ alter: true });
+    console.log("Tables Synced");
 
-      const stock = await Stock.create({
-        item: item.name,
-        category: item.category,
-        quantity: qty,
-        rate: item.rate,
-        value: qty * item.rate,
-        hsn: item.hsn,
-        grn: "GRN-" + Math.floor(Math.random()*10000),
-        batch_no: "BATCH-" + Math.floor(Math.random()*1000),
-        aging: Math.floor(Math.random()*365),
-        status: ["GOOD","DAMAGED","REPAIRABLE"][Math.floor(Math.random()*3)],
-        po_number: "PO-" + Math.floor(Math.random()*10000),
-        owner_id: 1,
+    const branches = [
+      1,2,3,4,5,
+      6,7,8,9,10,
+      11,12,13,14,15,
+      16,17,18,19,20
+    ];
+
+    const branchClientCounter = {};
+    const clients = [];
+
+    // ======================
+    // CREATE 50 CLIENTS
+    // ======================
+
+    for (let i = 1; i <= 50; i++) {
+
+      const branch =
+        branches[Math.floor(Math.random() * branches.length)];
+
+      if (!branchClientCounter[branch]) {
+        branchClientCounter[branch] = 1;
+      } else {
+        branchClientCounter[branch]++;
+      }
+
+      const clientCode =
+        `BR${branch}-CL${branchClientCounter[branch]}`;
+
+      clients.push({
+
+        client_code: clientCode,
+        name: `Client ${i}`,
+        phone: `9999900${100 + i}`,
+        email: `client${i}@mail.com`,
+        address: `Address ${i}`,
+        gst_number: `GSTCL${1000 + i}`,
+        credit_limit: 50000,
         branch_id: branch
-      });
 
-      // PURCHASE (IN)
-      await StockMovement.create({
-        stock_id: stock.id,
-        branch_id: branch,
-        type: "IN",
-        quantity: qty
-      });
-
-      // SALES (OUT)
-      await StockMovement.create({
-        stock_id: stock.id,
-        branch_id: branch,
-        type: "OUT",
-        quantity: Math.floor(qty * 0.4)
-      });
-
-      // DAMAGE (OUT)
-      await StockMovement.create({
-        stock_id: stock.id,
-        branch_id: branch,
-        type: "OUT",
-        quantity: Math.floor(qty * 0.05)
-      });
-
-      // SCRAP (OUT)
-      await StockMovement.create({
-        stock_id: stock.id,
-        branch_id: branch,
-        type: "OUT",
-        quantity: Math.floor(qty * 0.03)
       });
 
     }
+
+    const createdClients = await Client.bulkCreate(clients);
+
+    console.log("50 Clients Created");
+
+    // ======================
+    // 25 PURCHASE ENTRIES
+    // ======================
+
+    for (let i = 1; i <= 25; i++) {
+
+      const branch =
+        branches[Math.floor(Math.random() * branches.length)];
+
+      await Ledger.create({
+
+        branch_id: branch,
+        stock_id: i,
+        type: "PURCHASE",
+        quantity: 20 + i,
+        rate: 100 + i,
+        total: (20 + i) * (100 + i),
+        reference_no: `PO-${1000 + i}`,
+        created_by: 1
+
+      });
+
+    }
+
+    console.log("25 Purchase Entries Created");
+
+    // ======================
+    // 25 SALES + CLIENT LEDGER
+    // ======================
+
+    for (let i = 1; i <= 25; i++) {
+
+      const client =
+        createdClients[Math.floor(Math.random() * createdClients.length)];
+
+      const saleAmount = 2000 + (i * 100);
+
+      // Stock Ledger SALE
+      await Ledger.create({
+
+        branch_id: client.branch_id,
+        stock_id: i,
+        type: "SALE",
+        quantity: 10 + i,
+        rate: 150 + i,
+        total: saleAmount,
+        reference_no: `INV-${2000 + i}`,
+        created_by: 1
+
+      });
+
+      // Client SALE entry
+      await ClientLedger.create({
+
+        client_id: client.id,
+        branch_id: client.branch_id,
+        type: "SALE",
+        invoice_no: `INV-${2000 + i}`,
+        amount: saleAmount,
+        remark: "Product Sale"
+
+      });
+
+      // Client PAYMENT entry
+      await ClientLedger.create({
+
+        client_id: client.id,
+        branch_id: client.branch_id,
+        type: "PAYMENT",
+        invoice_no: `PAY-${3000 + i}`,
+        amount: saleAmount * 0.7,
+        remark: "Partial Payment"
+
+      });
+
+    }
+
+    console.log("25 Sales + Payments Added");
+
+    console.log("🚀 SEED DATA COMPLETED");
+
+    process.exit();
+
+  } catch (error) {
+
+    console.error(error);
+    process.exit();
+
   }
 
-  console.log("✅ Stock Data Seeded Successfully");
-  process.exit();
 }
 
 seedData();

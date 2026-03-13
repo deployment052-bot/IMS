@@ -2,6 +2,10 @@ const { DataTypes } = require("sequelize");
 const sequelize = require("../../config/sqlcon");
 
 const Client = sequelize.define("Client", {
+    client_code: {
+    type: DataTypes.STRING
+  },
+
   name: {
     type: DataTypes.STRING,
     

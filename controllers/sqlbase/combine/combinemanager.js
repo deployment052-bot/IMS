@@ -1229,6 +1229,7 @@ exports.getBranchLedger = async (req, res) => {
   }
 };
 
+
 exports.getCompleteDashboard = async (req, res) => {
   try {
 
@@ -1315,55 +1316,38 @@ exports.getCompleteDashboard = async (req, res) => {
     // ======================
     // CLIENT TABLE
     // ======================
-    const clients = await sequelize.query(`
-      SELECT
+const clients = await sequelize.query(`
+SELECT
+c.id,
+c.client_code AS "clientCode",
+c.name AS "vendorName",
+c.email,
+c.phone,
+c.gst_number AS "gstNumber",
 
-      c.name AS "vendorName",
-      c.email,
-      c.phone,
-      c.gst_number AS "gstNumber",
+COALESCE(SUM(CASE WHEN l.type='SALE' THEN l.amount ELSE 0 END),0) AS "totalAmount",
 
-      COALESCE(SUM(
-        CASE 
-        WHEN l.type='SALE'
-        THEN l.amount ELSE 0 END
-      ),0)::DECIMAL(12,2) AS "totalAmount",
+COALESCE(
+SUM(CASE WHEN l.type='SALE' THEN l.amount ELSE 0 END) -
+SUM(CASE WHEN l.type='PAYMENT' THEN l.amount ELSE 0 END)
+,0) AS "pendingAmount"
 
-      COALESCE(
-        SUM(
-          CASE 
-          WHEN l.type='SALE'
-          THEN l.amount ELSE 0 END
-        )
-        -
-        SUM(
-          CASE 
-          WHEN l.type='PAYMENT'
-          THEN l.amount ELSE 0 END
-        )
-      ,0)::DECIMAL(12,2) AS "pendingAmount"
+FROM clients c
 
-      FROM clients c
+LEFT JOIN client_ledger l
+ON l.client_id = c.id
+AND l.branch_id = :branchId
 
-      LEFT JOIN client_ledger l
-      ON c.id = l.client_id
+WHERE c.branch_id = :branchId
 
-      WHERE c.branch_id = :branchId
+GROUP BY c.id
 
-      GROUP BY 
-      c.id,
-      c.name,
-      c.email,
-      c.phone,
-      c.gst_number
+ORDER BY c."createdAt" DESC
 
-      ORDER BY c.name
-
-      LIMIT 50
-    `,{
-      replacements:{ branchId }
-    });
-
+LIMIT 50
+`,{
+replacements:{ branchId }
+});
 
     // ======================
     // STOCK TABLE
@@ -1406,7 +1390,7 @@ exports.getCompleteDashboard = async (req, res) => {
         cards: cards[0][0],
         monthlyCashflow: monthlyCashflow[0],
         categoryDistribution: categoryDistribution[0],
-        clients: clients[0],
+          clients: clients[0]
         // table: table[0]
       }
     });

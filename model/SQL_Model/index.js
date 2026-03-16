@@ -108,32 +108,40 @@ InvoiceItem.belongsTo(Invoice, {
 // ================= INIT DB =================
 
 const initDB = async () => {
+  try {
+    await sequelize.authenticate();
 
-  await sequelize.authenticate();
+    // Sync tables
+    await sequelize.sync({ alter: true });
 
-  await sequelize.sync({ alter: true });
+    console.log("✅ DB connected");
 
-  const roles = [
-    "super_admin",
-    "admin",
-    "hr_admin",
-    "stock_manager",
-    "sales_manager",
-    "super_stock_manager",
-    "super_inventory_manager",
-    "purchase_manager",
-    "finance"
-  ];
+    const roles = [
+      "super_admin",
+      "admin",
+      "hr_admin",
+      "stock_manager",
+      "sales_manager",
+      "super_stock_manager",
+      "inventory_manager",
+      "purchase_manager",
+      "finance"
+    ];
 
-  for (const name of roles) {
-    await Role.findOrCreate({
-      where: { name }
-    });
+    // Insert roles only if not exists
+    for (const name of roles) {
+      await Role.findOrCreate({
+        where: { name },
+        defaults: { name }
+      });
+    }
+
+    console.log("✅ Roles initialized");
+
+  } catch (error) {
+    console.error("❌ DB init error:", error);
   }
-
-  console.log("✅ DB connected");
 };
-
 
 module.exports = {
   sequelize,

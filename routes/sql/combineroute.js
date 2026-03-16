@@ -5,38 +5,169 @@ const {
   getInventoryDashboard,
   getInventoryDashboardCharts,
   getBranchOverview,
-  getBranchDashboard,getFullInventoryDashboard,getInventoryTable,getPurchaseSalesSummary,getPurchaseItems,getDamageStock,getStockMovements,getStockAgingDashboard,getReportsAnalyticsDashboard,getCompleteDashboard
-  
+  getBranchDashboard,
+  getFullInventoryDashboard,
+  getInventoryTable,
+  getPurchaseSalesSummary,
+  getPurchaseItems,
+  getDamageStock,
+  getAgingStock,
+  getStockMovements,
+  getStockAgingDashboard,
+  getReportsAnalyticsDashboard,
+  getCompleteDashboard
 } = require("../../controllers/sqlbase/combine/combinemanager");
 
 const auth = require("../../middleware/auth");
 const checkRole = require("../../middleware/role");
-// =====================================
-// GLOBAL INVENTORY DASHBOARD
-// =====================================
-
-// Table inventory data
-// router.get("/dashboard/inventory",auth,checkRole(["super_inventory_manager"]), getInventoryDashboard);
-
-// Charts (line + donut)
-router.get("/dashboard/charts",auth,checkRole(["stock_manager"]), getCompleteDashboard);
 
 
 // =====================================
-// BRANCH OVERVIEW (All branches)
+// MAIN DASHBOARD
 // =====================================
 
-router.get("/dashboard/branches", auth,checkRole(["super_inventory_manager"]),getFullInventoryDashboard);
+// Full dashboard (cards + charts + clients)
+router.get(
+  "/dashboard/complete",
+  auth,
+  checkRole(["stock_manager","inventory_manager"]),
+  getCompleteDashboard
+);
+
+
+// Inventory dashboard
+router.get(
+  "/dashboard/inventory",
+  auth,
+  checkRole(["stock_manager","inventory_manager"]),
+  getInventoryDashboard
+);
+
+
+// Dashboard charts
+router.get(
+  "/dashboard/charts",
+  auth,
+  checkRole(["stock_manager","inventory_manager"]),
+  getInventoryDashboardCharts
+);
+
+
+// Full inventory dashboard (all branches)
+router.get(
+  "/dashboard/full",
+  auth,
+  checkRole(["inventory_manager","stock_manager"]),
+  getFullInventoryDashboard
+);
 
 
 // =====================================
-// SINGLE BRANCH DASHBOARD
-// Example: /dashboard/branch/Maharashtra
+// BRANCH DATA
 // =====================================
 
-router.get("/dashboard/branch/:branch", getBranchDashboard);
-router.get("/inventory-table", getPurchaseItems);
+// Branch overview (all branches)
+router.get(
+  "/dashboard/branches",
+  auth,
+  checkRole(["inventory_manager","stock_manager"]),
+  getBranchOverview
+);
 
-// getPurchaseSalesSummary
+
+// Single branch dashboard
+router.get(
+  "/dashboard/branch/:branch",
+  auth,
+  checkRole(["stock_manager","inventory_manager"]),
+  getBranchDashboard
+);
+
+
+// =====================================
+// INVENTORY TABLE
+// =====================================
+
+router.get(
+  "/inventory/table",
+  auth,
+  checkRole(["stock_manager","inventory_manager"]),
+  getInventoryTable
+);
+
+
+// =====================================
+// PURCHASE / SALES
+// =====================================
+
+// Purchase vs sales summary
+router.get(
+  "/inventory/purchase-sales-summary",
+  auth,
+  checkRole(["stock_manager","inventory_manager"]),
+  getPurchaseSalesSummary
+);
+
+
+// Purchase items list
+router.get(
+  "/inventory/purchases",
+  auth,
+  checkRole(["stock_manager","inventory_manager"]),
+  getPurchaseItems
+);
+
+
+// =====================================
+// STOCK CONDITIONS
+// =====================================
+
+// Damaged stock
+router.get(
+  "/inventory/damaged",
+  auth,
+  checkRole(["stock_manager","inventory_manager"]),
+  getDamageStock
+);
+
+
+// Aging stock
+router.get(
+  "/inventory/aging",
+  auth,
+  checkRole(["stock_manager","inventory_manager"]),
+  getAgingStock
+);
+
+
+// Stock movement history
+router.get(
+  "/inventory/movements",
+  auth,
+  checkRole(["stock_manager","inventory_manager"]),
+  getStockMovements
+);
+
+
+// =====================================
+// ANALYTICS DASHBOARD
+// =====================================
+
+// Stock aging analytics dashboard
+router.get(
+  "/dashboard/aging",
+  auth,
+  checkRole(["stock_manager","inventory_manager"]),
+  getStockAgingDashboard
+);
+
+
+// Reports & analytics dashboard
+router.get(
+  "/dashboard/reports",
+  auth,
+  checkRole(["stock_manager","inventory_manager"]),
+  getReportsAnalyticsDashboard
+);
 
 module.exports = router;

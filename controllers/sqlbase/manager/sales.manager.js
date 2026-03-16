@@ -803,71 +803,146 @@ exports.addClientPayment = async (req, res) => {
 
 exports.getClientLedger = async (req, res) => {
   try {
-    const { clientId } = req.params;
 
-    const rows = await ClientLedger.findAll({
-      where: { client_id: clientId },
-      order: [["createdAt", "ASC"]],
+    const clients = await Client.findAll({
+      attributes: [
+        "id",
+        "name",
+        "phone",
+        "email",
+        "client_code",
+        [
+          sequelize.literal(`
+            COALESCE(SUM(CASE WHEN ledger.type='SALE' THEN ledger.amount ELSE 0 END),0)
+          `),
+          "revenue"
+        ],
+        [
+          sequelize.literal(`
+            COALESCE(SUM(CASE WHEN ledger.type='PAYMENT' THEN ledger.amount ELSE 0 END),0)
+          `),
+          "payment"
+        ],
+        [
+          sequelize.literal(`
+            COALESCE(SUM(CASE WHEN ledger.type='SALE' THEN ledger.amount ELSE 0 END),0)
+            -
+            COALESCE(SUM(CASE WHEN ledger.type='PAYMENT' THEN ledger.amount ELSE 0 END),0)
+          `),
+          "pendingAmount"
+        ]
+      ],
       include: [
-        { model: Client, as: "client", attributes: ["id", "name"] },
-        { model: Branch, as: "branch", attributes: ["id", "name", "location"] }
-      ]
-    });
-
-    let balance = 0;
-
-    const ledger = rows.map((r) => {
-      if (r.type === "SALE") balance += Number(r.amount);
-      else balance -= Number(r.amount);
-
-      return {
-        date: r.createdAt,
-        type: r.type,
-        invoice_no: r.invoice_no,
-        sale: r.type === "SALE" ? Number(r.amount) : 0,
-        payment: r.type === "PAYMENT" ? Number(r.amount) : 0,
-        balance,
-        remark: r.remark,
-        branch: r.branch
-      };
+        {
+          model: ClientLedger,
+          as: "ledger",
+          attributes: []
+        }
+      ],
+      group: ["Client.id"]
     });
 
     res.json({
-      clientId,
-      total: ledger.length,
-      outstanding: balance,
+      success: true,
+      totalClients: clients.length,
+      clients
+    });
+
+  } catch (err) {
+    res.status(500).json({
+      success: false,
+      error: err.message
+    });
+  }
+};
+
+exports.getClientLedgerDetails = async (req, res) => {
+  try {
+
+    const { clientId } = req.params;
+
+    const ledger = await ClientLedger.findAll({
+      where: { client_id: clientId },
+      attributes: [
+        "id",
+        "invoice_no",
+        "type",
+        "amount",
+        "remark",
+        "createdAt"
+      ],
+      include: [
+        {
+          model: Client,
+          as: "client",
+          attributes: ["id", "name"]
+        }
+      ],
+      order: [["createdAt", "DESC"]]
+    });
+
+    res.json({
+      success: true,
+      totalEntries: ledger.length,
       ledger
     });
 
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(500).json({
+      success: false,
+      error: err.message
+    });
   }
 };
+
 
 exports.listQuotations = async (req, res) => {
   try {
 
-    const { branch_id, status, search = "" } = req.query;
-
-    const where = {};
-
-    if (branch_id) where.branch_id = branch_id;
-
-    if (status) where.status = status;
-
-    if (search) {
-      where[Op.or] = [
-        { quotation_no: { [Op.iLike]: `%${search}%` } }
-      ];
-    }
+    const branchId = req.user?.branch_id; // agar branch based access hai
 
     const quotations = await Quotation.findAll({
-      where,
-      order: [["createdAt", "DESC"]],
+      where: branchId ? { branch_id: branchId } : {},
+
+      attributes: [
+        "id",
+        "quotation_no",
+        "client_id",
+        "branch_id",
+        "total_amount",
+        "gst_amount",
+        "valid_till",
+        "status",
+        "createdAt"
+      ],
+
       include: [
-        { model: Client },
-        { model: Branch }
-      ]
+        {
+          model: Client,
+          as: "client",
+          attributes: ["id", "name", "phone", "email"]
+        },
+        {
+          model: Branch,
+          as: "branch",
+          attributes: ["id", "name", "location"]
+        },
+        {
+          model: QuotationItem,
+          as: "items",
+          attributes: [
+            "id",
+            "product_name",
+            "quantity",
+            "unit_price",
+            "cgst",
+            "sgst",
+            "amount"
+          ]
+        }
+      ],
+
+      order: [["createdAt", "DESC"]]
     });
 
     res.json({
@@ -876,29 +951,9 @@ exports.listQuotations = async (req, res) => {
     });
 
   } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-};
-exports.listQuotations = async (req, res) => {
-  try {
-
-    const quotations = await Quotation.findAll({
-      include: [
-        { model: Client, as: "client" },
-        { model: Branch, as: "branch" },
-        {
-          model: QuotationItem,
-          as: "items"
-        }
-      ],
-      order: [["createdAt", "DESC"]]
-    });
-
-    res.json(quotations);
-
-  } catch (err) {
 
     res.status(500).json({
+      success: false,
       error: err.message
     });
 

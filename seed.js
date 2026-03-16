@@ -1,158 +1,205 @@
-// seed.js
+const { sequelize, Role, User, Branch, Stock, Ledger, Client } = require("./model/SQL_Model");
+const bcrypt = require("bcrypt");
 
-const sequelize = require("./config/sqlcon");
-
-const Ledger = require("./model/SQL_Model/ladger");
-const ClientLedger = require("./model/SQL_Model/client.ladger");
-const Client = require("./model/SQL_Model/client");
-
-async function seedData() {
-
+const seedData = async () => {
   try {
 
-    await sequelize.authenticate();
-    console.log("DB Connected");
+    console.log("🚀 Seeding started...");
 
-    await sequelize.sync({ alter: true });
-    console.log("Tables Synced");
+    // ================= SYNC TABLES =================
+    await sequelize.sync({ force: true });
+    console.log("✅ Tables recreated");
 
-    const branches = [
-      1,2,3,4,5,
-      6,7,8,9,10,
-      11,12,13,14,15,
-      16,17,18,19,20
+    // ================= ROLES =================
+    const roles = [
+      "super_admin",
+      "admin",
+      "stock_manager",
+      "sales_manager",
+      "purchase_manager",
+      "finance",
+      "inventory_manager"
     ];
 
-    const branchClientCounter = {};
-    const clients = [];
+    const roleMap = {};
 
-    // ======================
-    // CREATE 50 CLIENTS
-    // ======================
+    for (const r of roles) {
+      const role = await Role.create({ name: r });
+      roleMap[r] = role.id;
+    }
 
-    for (let i = 1; i <= 50; i++) {
+    console.log("✅ Roles created");
 
-      const branch =
-        branches[Math.floor(Math.random() * branches.length)];
+    // ================= SUPER ADMIN =================
+    const hashedPassword = await bcrypt.hash("123456", 10);
 
-      if (!branchClientCounter[branch]) {
-        branchClientCounter[branch] = 1;
-      } else {
-        branchClientCounter[branch]++;
+    const superAdmin = await User.create({
+      name: "Super Admin",
+      email: "super@ims.com",
+      password: hashedPassword,
+      role_id: roleMap.super_admin,
+      is_active: true
+    });
+
+    console.log("✅ Super Admin created");
+
+    // ================= CITY DATA =================
+    const cities = [
+      { city: "Hyderabad", state: "Telangana" },
+      { city: "Kolkata", state: "West Bengal" },
+      { city: "Patna", state: "Bihar" },
+      { city: "Ahmedabad", state: "Gujarat" },
+      { city: "Mumbai", state: "Maharashtra" },
+      { city: "Bangalore", state: "Karnataka" }
+    ];
+
+    for (const c of cities) {
+
+      // ================= CITY HUB =================
+      const cityHub = await Branch.create({
+        code: `HUB-${c.city.toUpperCase()}`,
+        name: `${c.city} Hub`,
+        location: c.city,
+        state: c.state,
+        type: "WAREHOUSE",
+        status: "ACTIVE",
+        contact_number: "9999999999",
+        email: `${c.city.toLowerCase()}hub@ims.com`,
+        parent_branch_id: null
+      });
+
+      console.log(`🏙 ${c.city} Hub created`);
+
+      // ================= BRANCHES =================
+      for (let i = 1; i <= 3; i++) {
+
+        const branch = await Branch.create({
+          code: `${c.city.slice(0,3).toUpperCase()}-${i}`,
+          name: `${c.city} Branch ${i}`,
+          location: c.city,
+          state: c.state,
+          type: "WAREHOUSE",
+          status: "ACTIVE",
+          contact_number: `99999999${i}`,
+          email: `${c.city.toLowerCase()}${i}@ims.com`,
+          parent_branch_id: cityHub.id
+        });
+
+        // ================= USERS =================
+        const users = [
+          { name:`${branch.name} Admin`, role:"admin", email:`admin_${branch.code}@ims.com` },
+          { name:`${branch.name} Stock Manager`, role:"stock_manager", email:`stock_${branch.code}@ims.com` },
+          { name:`${branch.name} Sales Manager`, role:"sales_manager", email:`sales_${branch.code}@ims.com` },
+          { name:`${branch.name} Purchase Manager`, role:"purchase_manager", email:`purchase_${branch.code}@ims.com` },
+          { name:`${branch.name} Finance`, role:"finance", email:`finance_${branch.code}@ims.com` },
+          { name:`${branch.name} Inventory Manager`, role:"inventory_manager", email:`inventory_${branch.code}@ims.com` }
+        ];
+
+        for (const u of users) {
+
+          await User.create({
+            name: u.name,
+            email: u.email,
+            password: hashedPassword,
+            role_id: roleMap[u.role],
+            branch_id: branch.id,
+            is_active: true
+          });
+
+        }
+
+        // ================= STOCK =================
+        const stockItems = [];
+
+        for (let s = 1; s <= 50; s++) {
+
+          const qty = Math.floor(Math.random() * 100) + 1;
+          const rate = Math.floor(Math.random() * 5000) + 100;
+
+          stockItems.push({
+            branch_id: branch.id,
+            item: `Item-${s}`,
+            quantity: qty,
+            rate,
+            value: qty * rate,
+            owner_id: superAdmin.id
+          });
+
+        }
+
+        await Stock.bulkCreate(stockItems);
+
+        // ================= CLIENTS =================
+        const clients = [];
+
+        for (let i = 1; i <= 20; i++) {
+
+          clients.push({
+            client_code: `CL-${branch.id}-${i}`,
+            name: `Client ${branch.id}-${i}`,
+            phone: `98${Math.floor(10000000 + Math.random()*90000000)}`,
+            email: `client${branch.id}${i}@demo.com`,
+            address: `Address ${branch.location}`,
+            gst_number: `GST${Math.floor(100000000000 + Math.random()*900000000000)}`,
+            credit_limit: 50000,
+            branch_id: branch.id
+          });
+
+        }
+
+        await Client.bulkCreate(clients);
+
+        // ================= LEDGER =================
+        const stocks = await Stock.findAll({ where:{ branch_id: branch.id } });
+
+        const ledgerEntries = [];
+
+        for (let i = 0; i < 25; i++) {
+
+          const stock = stocks[Math.floor(Math.random()*stocks.length)];
+          const qty = Math.floor(Math.random()*5)+1;
+
+          ledgerEntries.push({
+            branch_id: branch.id,
+            stock_id: stock.id,
+            type:"SALE",
+            quantity: qty,
+            rate: stock.rate,
+            total: qty * stock.rate,
+            reference_no:`INV-${Date.now()}-${Math.random()}`,
+            created_by: superAdmin.id
+          });
+
+          ledgerEntries.push({
+            branch_id: branch.id,
+            stock_id: stock.id,
+            type:"PURCHASE",
+            quantity: qty+2,
+            rate: stock.rate,
+            total: (qty+2) * stock.rate,
+            reference_no:`PUR-${Date.now()}-${Math.random()}`,
+            created_by: superAdmin.id
+          });
+
+        }
+
+        await Ledger.bulkCreate(ledgerEntries);
+
+        console.log(`🏢 ${branch.name} setup complete`);
+
       }
 
-      const clientCode =
-        `BR${branch}-CL${branchClientCounter[branch]}`;
-
-      clients.push({
-
-        client_code: clientCode,
-        name: `Client ${i}`,
-        phone: `9999900${100 + i}`,
-        email: `client${i}@mail.com`,
-        address: `Address ${i}`,
-        gst_number: `GSTCL${1000 + i}`,
-        credit_limit: 50000,
-        branch_id: branch
-
-      });
-
     }
 
-    const createdClients = await Client.bulkCreate(clients);
-
-    console.log("50 Clients Created");
-
-    // ======================
-    // 25 PURCHASE ENTRIES
-    // ======================
-
-    for (let i = 1; i <= 25; i++) {
-
-      const branch =
-        branches[Math.floor(Math.random() * branches.length)];
-
-      await Ledger.create({
-
-        branch_id: branch,
-        stock_id: i,
-        type: "PURCHASE",
-        quantity: 20 + i,
-        rate: 100 + i,
-        total: (20 + i) * (100 + i),
-        reference_no: `PO-${1000 + i}`,
-        created_by: 1
-
-      });
-
-    }
-
-    console.log("25 Purchase Entries Created");
-
-    // ======================
-    // 25 SALES + CLIENT LEDGER
-    // ======================
-
-    for (let i = 1; i <= 25; i++) {
-
-      const client =
-        createdClients[Math.floor(Math.random() * createdClients.length)];
-
-      const saleAmount = 2000 + (i * 100);
-
-      // Stock Ledger SALE
-      await Ledger.create({
-
-        branch_id: client.branch_id,
-        stock_id: i,
-        type: "SALE",
-        quantity: 10 + i,
-        rate: 150 + i,
-        total: saleAmount,
-        reference_no: `INV-${2000 + i}`,
-        created_by: 1
-
-      });
-
-      // Client SALE entry
-      await ClientLedger.create({
-
-        client_id: client.id,
-        branch_id: client.branch_id,
-        type: "SALE",
-        invoice_no: `INV-${2000 + i}`,
-        amount: saleAmount,
-        remark: "Product Sale"
-
-      });
-
-      // Client PAYMENT entry
-      await ClientLedger.create({
-
-        client_id: client.id,
-        branch_id: client.branch_id,
-        type: "PAYMENT",
-        invoice_no: `PAY-${3000 + i}`,
-        amount: saleAmount * 0.7,
-        remark: "Partial Payment"
-
-      });
-
-    }
-
-    console.log("25 Sales + Payments Added");
-
-    console.log("🚀 SEED DATA COMPLETED");
-
+    console.log("🎉 ENTERPRISE IMS SEED COMPLETE");
     process.exit();
 
-  } catch (error) {
+  } catch (err) {
 
-    console.error(error);
-    process.exit();
+    console.error("❌ Seed error:", err);
+    process.exit(1);
 
   }
-
-}
+};
 
 seedData();

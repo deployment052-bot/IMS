@@ -22,7 +22,7 @@ const ClientLedger = sequelize.define("ClientLedger", {
   invoice_no: {
     type: DataTypes.STRING
   },
-
+ 
   amount: {
     type: DataTypes.FLOAT,
     allowNull: false,

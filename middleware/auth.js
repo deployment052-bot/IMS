@@ -10,7 +10,6 @@ const auth = async (req, res, next) => {
     }
 
     const token = authHeader.split(" ")[1];
-
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
 
     const user = await User.findByPk(decoded.id, {
@@ -26,22 +25,39 @@ const auth = async (req, res, next) => {
       return res.status(401).json({ message: "User not found" });
     }
 
-    // 🔥🔥 IMPORTANT FIX (MERGE DATA)
+    const roleName = user.role?.name;
+
+    // 🔥 SUPER ROLES LIST
+    const superRoles = ["super_admin", "super_stock", "super_sales_manager"];
+
+    let branches = [];
+
+    if (superRoles.includes(roleName)) {
+      // ✅ Super users → access to ALL branches
+      branches = ["ALL"];
+    } else {
+      // ✅ Normal users → must have branch_id
+      if (!user.branch_id) {
+        return res.status(400).json({
+          error: "No branch assigned to user",
+        });
+      }
+
+      branches = decoded.branches || [user.branch_id];
+    }
+
     req.user = {
       id: user.id,
       name: user.name,
       email: user.email,
-      role: user.role,
+      role: roleName,
       branch_id: user.branch_id,
-
-      // ✅ JWT se lo
-      branches: decoded.branches || [user.branch_id]
+      branches,
     };
 
-    console.log("FINAL USER:", req.user); // 🔍 DEBUG
+    console.log("✅ FINAL USER:", req.user);
 
     next();
-
   } catch (err) {
     console.error("JWT ERROR:", err.message);
     return res.status(401).json({ message: "Invalid token" });

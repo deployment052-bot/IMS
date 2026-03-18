@@ -50,7 +50,6 @@ exports.register = async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 };
-
 exports.login = async (req, res) => {
   try {
     const { email, password } = req.body;
@@ -76,48 +75,58 @@ exports.login = async (req, res) => {
       return res.status(403).json({ error: "Account not active" });
     }
 
-    // 🔐 PASSWORD CHECK (uncomment in production)
+    // 🔐 PASSWORD CHECK (enable in production)
     // const match = await bcrypt.compare(password, user.password);
     // if (!match) {
     //   return res.status(401).json({ error: "Invalid password" });
     // }
 
-    // =========================
-    // 🔥 FETCH USER BRANCHES
-    // =========================
+    const roleName = user.role?.name;
+
+    // 🔥 SUPER ROLES
+    const superRoles = ["super_admin", "super_stock", "super_sales_manager"];
 
     let branchIds = [];
 
-    try {
-      const userBranches = await UserBranch.findAll({
-        where: { user_id: user.id },
-        attributes: ["branch_id"],
-      });
+    // =========================
+    // ✅ SUPER ADMIN FIX
+    // =========================
+    if (superRoles.includes(roleName)) {
+      branchIds = ["ALL"]; // ✅ bypass branch check
+    } else {
+      // =========================
+      // 🔥 FETCH USER BRANCHES
+      // =========================
+      try {
+        const userBranches = await UserBranch.findAll({
+          where: { user_id: user.id },
+          attributes: ["branch_id"],
+        });
 
-      branchIds = userBranches.map(b => b.branch_id);
+        branchIds = userBranches.map(b => b.branch_id);
 
-    } catch (err) {
-      // fallback if mapping table not used
-      if (user.branch_id) {
-        branchIds = [user.branch_id];
+      } catch (err) {
+        if (user.branch_id) {
+          branchIds = [user.branch_id];
+        }
       }
-    }
 
-    if (!branchIds.length) {
-      return res.status(403).json({
-        error: "No branch assigned to user",
-      });
+      // ❌ ONLY NORMAL USERS CHECK
+      if (!branchIds.length) {
+        return res.status(403).json({
+          error: "No branch assigned to user",
+        });
+      }
     }
 
     // =========================
     // 🔥 TOKEN
     // =========================
-
     const token = jwt.sign(
       {
         id: user.id,
-        role: user.role.name,
-        branches: branchIds,   // ✅ FIXED
+        role: roleName,
+        branches: branchIds,
       },
       process.env.JWT_SECRET,
       { expiresIn: "7d" }
@@ -129,14 +138,14 @@ exports.login = async (req, res) => {
         id: user.id,
         name: user.name,
         email: user.email,
-        role: user.role.name,
-        branches: branchIds,   // ✅ FIXED
+        role: roleName,
+        branches: branchIds,
       },
     });
 
   } catch (err) {
+    console.error("LOGIN ERROR:", err);
     res.status(500).json({ error: err.message });
   }
 };
-
 

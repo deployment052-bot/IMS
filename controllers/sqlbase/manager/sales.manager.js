@@ -171,61 +171,44 @@ exports.listClients = async (req, res) => {
 };
 
 exports.createQuotation = async (req, res) => {
-
   const t = await sequelize.transaction();
 
   try {
+    const { client, products, gst_percent = 0, valid_till } = req.body;
 
-    const {
-      client,
-      products,
-      gst_percent = 0,
-      valid_till
-    } = req.body;
-
-    // ✅ secure branch_id from token
     const branch_id = req.user.branch_id;
 
     if (!products || products.length === 0) {
-      await t.rollback();
-      return res.status(400).json({
-        error: "Products are required"
-      });
+      if (!t.finished) await t.rollback();
+      return res.status(400).json({ error: "Products are required" });
     }
 
     // =========================
     // CLIENT
     // =========================
-    const clientData = await getOrCreateClient(
-      { ...client, branch_id },
-      t
-    );
+    const clientData = await getOrCreateClient({ ...client, branch_id }, t);
 
     // =========================
     // STOCK VALIDATION
     // =========================
     for (const p of products) {
-
       const stock = await Stock.findOne({
-        where: {
-          item: p.product_name, // ✅ FIXED
-          branch_id
-        },
-        transaction: t
+        where: { item: p.product_name, branch_id },
+        transaction: t,
       });
 
       if (!stock) {
-        await t.rollback();
-        return res.status(400).json({
-          error: `Stock not found for ${p.product_name}`
-        });
+        if (!t.finished) await t.rollback();
+        return res
+          .status(400)
+          .json({ error: `Stock not found for ${p.product_name}` });
       }
 
       if (stock.quantity < p.quantity) {
-        await t.rollback();
-        return res.status(400).json({
-          error: `Not enough stock for ${p.product_name}`
-        });
+        if (!t.finished) await t.rollback();
+        return res
+          .status(400)
+          .json({ error: `Not enough stock for ${p.product_name}` });
       }
     }
 
@@ -236,27 +219,22 @@ exports.createQuotation = async (req, res) => {
       where: { branch_id },
       order: [["createdAt", "DESC"]],
       transaction: t,
-      lock: t.LOCK.UPDATE
+      lock: t.LOCK.UPDATE,
     });
 
     let next = 1;
-
     if (last?.quotation_no) {
       const parts = last.quotation_no.split("-");
       next = Number(parts[2]) + 1;
     }
 
-    const quotation_no =
-      `QT-${branch_id}-${String(next).padStart(4, "0")}`;
+    const quotation_no = `QT-${branch_id}-${String(next).padStart(4, "0")}`;
 
     // =========================
-    // TOTAL CALC
+    // TOTAL CALCULATION
     // =========================
     let subtotal = 0;
-
-    for (const p of products) {
-      subtotal += p.quantity * p.unit_price;
-    }
+    for (const p of products) subtotal += p.quantity * p.unit_price;
 
     const gst_amount = (subtotal * gst_percent) / 100;
     const grand_total = subtotal + gst_amount;
@@ -264,95 +242,91 @@ exports.createQuotation = async (req, res) => {
     // =========================
     // CREATE QUOTATION
     // =========================
-    const quotation = await Quotation.create({
-
-      quotation_no,
-      client_id: clientData.id,
-      branch_id,
-
-      total_amount: grand_total,
-      gst_amount,
-
-      valid_till: valid_till || null,
-      status: "pending"
-
-    }, { transaction: t });
+    const quotation = await Quotation.create(
+      {
+        quotation_no,
+        client_id: clientData.id,
+        branch_id,
+        total_amount: grand_total,
+        gst_amount,
+        valid_till: valid_till || null,
+        status: "pending",
+      },
+      { transaction: t }
+    );
 
     // =========================
-    // CREATE ITEMS
+    // CREATE QUOTATION ITEMS
     // =========================
     for (const p of products) {
-
       const itemTotal = p.quantity * p.unit_price;
-
       const cgst = (itemTotal * gst_percent) / 200;
       const sgst = (itemTotal * gst_percent) / 200;
 
-      await QuotationItem.create({
-
-        quotation_id: quotation.id,
-        product_name: p.product_name,
-        quantity: p.quantity,
-        unit_price: p.unit_price,
-        unit: p.unit || "",
-        hsn: p.hsn || "",
-        specifications: p.specifications || "", // ✅ added
-        cgst,
-        sgst,
-        subtotal: itemTotal,
-        amount: itemTotal + cgst + sgst
-
-      }, { transaction: t });
+      await QuotationItem.create(
+        {
+          quotation_id: quotation.id,
+          product_name: p.product_name,
+          quantity: p.quantity,
+          unit_price: p.unit_price,
+          unit: p.unit || "",
+          hsn: p.hsn || "",
+          specifications: p.specifications || "",
+          cgst,
+          sgst,
+          subtotal: itemTotal,
+          amount: itemTotal + cgst + sgst,
+        },
+        { transaction: t }
+      );
     }
 
+    // =========================
+    // COMMIT TRANSACTION
+    // =========================
     await t.commit();
 
     // =========================
-    // PDF GENERATION
+    // PDF GENERATION (outside transaction)
     // =========================
     const branch = await Branch.findByPk(branch_id);
 
     const items = await QuotationItem.findAll({
-      where: { quotation_id: quotation.id }
+      where: { quotation_id: quotation.id },
     });
 
-    const html = quotationHTML({
-      branch,
-      quotation,
-      client: clientData,
-      items
-    });
+    const html = quotationHTML({ branch, quotation, client: clientData, items });
 
     const browser = await puppeteer.launch();
     const page = await browser.newPage();
 
-    await page.setContent(html, {
-      waitUntil: "networkidle0"
-    });
+    await page.setContent(html, { waitUntil: "networkidle0" });
 
-    const pdf = await page.pdf({
-      format: "A4",
-      printBackground: true
-    });
+    const pdf = await page.pdf({ format: "A4", printBackground: true });
 
     await browser.close();
 
+    // =========================
+    // SEND PDF RESPONSE
+    // =========================
     res.set({
       "Content-Type": "application/pdf",
-      "Content-Disposition": "inline; filename=quotation.pdf"
+      "Content-Disposition": `inline; filename=${quotation_no}.pdf`,
     });
 
     return res.send(pdf);
-
   } catch (err) {
-
-    await t.rollback();
+    // =========================
+    // SAFE ROLLBACK
+    // =========================
+    try {
+      if (!t.finished) await t.rollback();
+    } catch (rollbackErr) {
+      console.error("Rollback failed:", rollbackErr);
+    }
 
     console.error(err);
-
-    res.status(500).json({
-      error: err.message
-    });
+    return res.status(500).json({ message: "Something went wrong!", error: err.message });
   }
 };
 
@@ -1204,6 +1178,260 @@ exports.getAdvancedSalesAnalytics = async (req, res) => {
       categorySales: categorySales[0],
 
       recentActivity: recentActivity[0]
+
+    });
+
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({
+      success: false,
+      error: err.message
+    });
+  }
+};
+
+exports.getClientLedgerSummary = async (req, res) => {
+  try {
+
+    const branchId = req.user?.branch_id || null;
+
+    const data = await sequelize.query(`
+      SELECT 
+        c.id AS "clientId",
+        c.name AS "companyName",
+        c.email,
+        c.phone,
+        COALESCE(c.gst_number, 'N/A') AS "gstNumber",
+
+        COUNT(q.id) AS "totalEntries",
+
+        COALESCE(SUM(q.total_amount),0) AS "totalAmount",
+
+        COALESCE(SUM(
+          CASE 
+            WHEN q.status = 'pending' THEN q.total_amount 
+            ELSE 0 
+          END
+        ),0) AS "pendingAmount",
+
+        COALESCE(SUM(
+          CASE 
+            WHEN q.status = 'invoiced' THEN q.total_amount 
+            ELSE 0 
+          END
+        ),0) AS "revenue"
+
+      FROM clients c
+
+      LEFT JOIN quotations q 
+      ON q.client_id = c.id
+
+      ${branchId ? `WHERE c.branch_id = ${branchId}` : ""}
+
+      GROUP BY c.id
+
+      ORDER BY "totalAmount" DESC
+    `);
+
+    res.json({
+      success: true,
+      clients: data[0]
+    });
+
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({
+      success: false,
+      error: err.message
+    });
+  }
+};
+
+// exports.getClientLedgerDetails = async (req, res) => {
+//   try {
+
+//     const { clientId } = req.params;
+//     const branchId = req.user?.branch_id || null;
+
+//     const data = await sequelize.query(`
+//       SELECT 
+//         q.id AS "entryId",
+//         q.quotation_no AS "transactionId",
+//         c.name AS "client",
+//         TO_CHAR(q."createdAt", 'DD/MM/YYYY, HH24:MI:SS') AS "dateTime",
+
+//         -- TOTAL AMOUNT
+//         COALESCE(q.total_amount,0) AS "amount",
+
+//         -- RECEIVED (invoiced means received)
+//         COALESCE(
+//           CASE 
+//             WHEN q.status = 'invoiced' THEN q.total_amount
+//             ELSE 0
+//           END
+//         ,0) AS "receivedAmount",
+
+//         -- PENDING
+//         COALESCE(
+//           CASE 
+//             WHEN q.status != 'invoiced' THEN q.total_amount
+//             ELSE 0
+//           END
+//         ,0) AS "pendingAmount"
+
+//       FROM quotations q
+
+//       LEFT JOIN clients c 
+//       ON c.id = q.client_id
+
+//       WHERE q.client_id = :clientId
+//       ${branchId ? `AND q.branch_id = ${branchId}` : ""}
+
+//       ORDER BY q."createdAt" DESC
+//     `, {
+//       replacements: { clientId }
+//     });
+
+//     res.json({
+//       success: true,
+//       totalEntries: data[0].length,
+//       ledger: data[0]
+//     });
+
+//   } catch (err) {
+//     console.error(err);
+//     res.status(500).json({
+//       success: false,
+//       error: err.message
+//     });
+//   }
+// };
+
+exports.getClientLedgerDetails = async (req, res) => {
+  try {
+
+    const { clientId } = req.params;
+    const branchId = req.user?.branch_id || null;
+
+    const data = await sequelize.query(`
+      SELECT 
+        q.id AS "entryId",
+        q.quotation_no AS "transactionId",
+        c.name AS "client",
+        TO_CHAR(q."createdAt", 'DD/MM/YYYY, HH24:MI:SS') AS "dateTime",
+
+        -- TOTAL AMOUNT
+        COALESCE(q.total_amount,0) AS "amount",
+
+        -- RECEIVED (invoiced means received)
+        COALESCE(
+          CASE 
+            WHEN q.status = 'invoiced' THEN q.total_amount
+            ELSE 0
+          END
+        ,0) AS "receivedAmount",
+
+        -- PENDING
+        COALESCE(
+          CASE 
+            WHEN q.status != 'invoiced' THEN q.total_amount
+            ELSE 0
+          END
+        ,0) AS "pendingAmount"
+
+      FROM quotations q
+
+      LEFT JOIN clients c 
+      ON c.id = q.client_id
+
+      WHERE q.client_id = :clientId
+      ${branchId ? `AND q.branch_id = ${branchId}` : ""}
+
+      ORDER BY q."createdAt" DESC
+    `, {
+      replacements: { clientId }
+    });
+
+    res.json({
+      success: true,
+      totalEntries: data[0].length,
+      ledger: data[0]
+    });
+
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({
+      success: false,
+      error: err.message
+    });
+  }
+};
+
+
+exports.getInvoiceDashboard = async (req, res) => {
+  try {
+
+    const branchId = req.user?.branch_id || null;
+    const whereClause = branchId ? `WHERE branch_id = ${branchId}` : "";
+
+    // ===============================
+    // 1. TOP CARDS
+    // ===============================
+    const stats = await sequelize.query(`
+      SELECT 
+        COUNT(*) FILTER (WHERE status='invoiced') AS "totalInvoice",
+
+        COUNT(*) FILTER (
+          WHERE status='pending'
+          AND "createdAt" >= NOW() - INTERVAL '7 days'
+        ) AS "pendingInvoice",
+
+        COUNT(*) FILTER (
+          WHERE status='invoiced'
+          AND DATE("createdAt") = CURRENT_DATE
+        ) AS "todayInvoice",
+
+        COUNT(*) FILTER (WHERE status='rejected') AS "rejectedInvoice"
+
+      FROM quotations
+      ${whereClause}
+    `);
+
+    // ===============================
+    // 2. INVOICE LIST
+    // ===============================
+    const invoices = await sequelize.query(`
+      SELECT 
+        q.id,
+        q.quotation_no AS "invoiceNo",
+        c.name AS client,
+        q.total_amount AS amount,
+        q.status,
+
+        TO_CHAR(q."createdAt", 'DD/MM/YYYY, HH24:MI') AS date,
+
+        q.reference_no AS "quotationRef"
+
+      FROM quotations q
+
+      LEFT JOIN clients c 
+      ON c.id = q.client_id
+
+      ${branchId ? `WHERE q.branch_id = ${branchId}` : ""}
+
+      ORDER BY q."createdAt" DESC
+      LIMIT 20
+    `);
+
+    // ===============================
+    // FINAL RESPONSE
+    // ===============================
+    res.json({
+      success: true,
+
+      stats: stats[0][0],
+
+      invoices: invoices[0]
 
     });
 

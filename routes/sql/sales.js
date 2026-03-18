@@ -18,8 +18,14 @@ router.get("/ledger/:clientId", auth, checkRole(["sales_manager","admin","financ
 router.post('/gt/:id',auth,checkRole(["sales_manager","admin","super_admin"]),salemanager.convertQuotationToInvoice)
 router.get("/get", auth, checkRole(["sales_manager","admin","finance","super_stock_manager","super_admin"]), salemanager.listQuotations);
 // router.get("/getsales",auth,checkRole(["sales_manager","admin","super_admin"]),salemanager.getClientLedger)
-router.get("/client-ledger/:clientId", auth, checkRole(["sales_manager","admin"]), salemanager.getClientLedgerDetails);
+// router.get("/client-ledger/:clientId", auth, checkRole(["sales_manager","admin"]), salemanager.getClientLedgerDetails);
 router.get('/report',auth, checkRole(["sales_manager","admin"]), salemanager.reportandanalysis)
 router.put("/approve/:id",auth,checkRole(["sales_manager","super_admin", "super_sales_manager"]),salemanager.approveQuotation);
 router.get('/dashbord',auth,checkRole(["sales_manager","super_admin", "super_sales_manager"]),salemanager.getAdvancedSalesAnalytics)
+
+//Ladger-screen-entries
+router.get('/get-ladger',auth,checkRole(["sales_manager","super_admin", "super_sales_manager"]),salemanager.getClientLedgerSummary)
+//Ladger-screen-entries
+router.get('/get-ladger/:clientId',auth,checkRole(["sales_manager","super_admin", "super_sales_manager"]),salemanager.getClientLedgerDetails)
+router.get('/get-invoice',auth,checkRole(["sales_manager","super_admin", "super_sales_manager"]),salemanager.getInvoiceDashboard)
 module.exports=router;

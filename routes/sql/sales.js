@@ -19,6 +19,7 @@ router.post('/gt/:id',auth,checkRole(["sales_manager","admin","super_admin"]),sa
 router.get("/get", auth, checkRole(["sales_manager","admin","finance","super_stock_manager","super_admin"]), salemanager.listQuotations);
 // router.get("/getsales",auth,checkRole(["sales_manager","admin","super_admin"]),salemanager.getClientLedger)
 router.get("/client-ledger/:clientId", auth, checkRole(["sales_manager","admin"]), salemanager.getClientLedgerDetails);
-router.get('/report',auth, checkRole(["sales_manager","admin"]), salemanager.getSalesDashboard)
-
+router.get('/report',auth, checkRole(["sales_manager","admin"]), salemanager.reportandanalysis)
+router.put("/approve/:id",auth,checkRole(["sales_manager","super_admin", "super_sales_manager"]),salemanager.approveQuotation);
+router.get('/dashbord',auth,checkRole(["sales_manager","super_admin", "super_sales_manager"]),salemanager.getAdvancedSalesAnalytics)
 module.exports=router;

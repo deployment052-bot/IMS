@@ -178,65 +178,60 @@ exports.createQuotation = async (req, res) => {
 
     const {
       client,
-      branch_id,
       products,
       gst_percent = 0,
       valid_till
     } = req.body;
 
+    // ✅ secure branch_id from token
+    const branch_id = req.user.branch_id;
+
+    if (!products || products.length === 0) {
+      await t.rollback();
+      return res.status(400).json({
+        error: "Products are required"
+      });
+    }
 
     // =========================
     // CLIENT
     // =========================
-
-    const clientData =
-      await getOrCreateClient(
-        { ...client, branch_id },
-        t
-      );
-
+    const clientData = await getOrCreateClient(
+      { ...client, branch_id },
+      t
+    );
 
     // =========================
     // STOCK VALIDATION
     // =========================
-
     for (const p of products) {
 
       const stock = await Stock.findOne({
         where: {
-          name: p.product_name,
+          item: p.product_name, // ✅ FIXED
           branch_id
         },
         transaction: t
       });
 
       if (!stock) {
-
         await t.rollback();
-
         return res.status(400).json({
           error: `Stock not found for ${p.product_name}`
         });
-
       }
 
       if (stock.quantity < p.quantity) {
-
         await t.rollback();
-
         return res.status(400).json({
           error: `Not enough stock for ${p.product_name}`
         });
-
       }
-
     }
-
 
     // =========================
     // QUOTATION NO
     // =========================
-
     const last = await Quotation.findOne({
       where: { branch_id },
       order: [["createdAt", "DESC"]],
@@ -247,167 +242,118 @@ exports.createQuotation = async (req, res) => {
     let next = 1;
 
     if (last?.quotation_no) {
-
-      const parts =
-        last.quotation_no.split("-");
-
+      const parts = last.quotation_no.split("-");
       next = Number(parts[2]) + 1;
     }
 
     const quotation_no =
       `QT-${branch_id}-${String(next).padStart(4, "0")}`;
 
-
     // =========================
     // TOTAL CALC
     // =========================
-
     let subtotal = 0;
 
     for (const p of products) {
       subtotal += p.quantity * p.unit_price;
     }
 
-    const gst_amount =
-      subtotal * gst_percent / 100;
-
-    const grand_total =
-      subtotal + gst_amount;
-
+    const gst_amount = (subtotal * gst_percent) / 100;
+    const grand_total = subtotal + gst_amount;
 
     // =========================
     // CREATE QUOTATION
     // =========================
+    const quotation = await Quotation.create({
 
-    const quotation =
-      await Quotation.create({
+      quotation_no,
+      client_id: clientData.id,
+      branch_id,
 
-        quotation_no,
-        client_id: clientData.id,
-        branch_id,
+      total_amount: grand_total,
+      gst_amount,
 
-        total_amount: grand_total,
-        gst_amount,
+      valid_till: valid_till || null,
+      status: "pending"
 
-        valid_till:
-          valid_till || null,
-
-        status: "pending"
-
-      }, { transaction: t });
-
+    }, { transaction: t });
 
     // =========================
     // CREATE ITEMS
     // =========================
-
     for (const p of products) {
 
-      const itemTotal =
-        p.quantity * p.unit_price;
+      const itemTotal = p.quantity * p.unit_price;
 
-      const cgst =
-        (itemTotal * gst_percent) / 200;
-
-      const sgst =
-        (itemTotal * gst_percent) / 200;
+      const cgst = (itemTotal * gst_percent) / 200;
+      const sgst = (itemTotal * gst_percent) / 200;
 
       await QuotationItem.create({
 
         quotation_id: quotation.id,
-
         product_name: p.product_name,
-
         quantity: p.quantity,
-
         unit_price: p.unit_price,
-
         unit: p.unit || "",
-
         hsn: p.hsn || "",
-
+        specifications: p.specifications || "", // ✅ added
         cgst,
-
         sgst,
-
         subtotal: itemTotal,
-
-        amount:
-          itemTotal + cgst + sgst
+        amount: itemTotal + cgst + sgst
 
       }, { transaction: t });
-
     }
 
     await t.commit();
 
-
     // =========================
-    // GET DATA FOR PDF
+    // PDF GENERATION
     // =========================
+    const branch = await Branch.findByPk(branch_id);
 
-    const branch =
-      await Branch.findByPk(branch_id);
+    const items = await QuotationItem.findAll({
+      where: { quotation_id: quotation.id }
+    });
 
-    const items =
-      await QuotationItem.findAll({
-        where: {
-          quotation_id: quotation.id
-        }
-      });
+    const html = quotationHTML({
+      branch,
+      quotation,
+      client: clientData,
+      items
+    });
 
-
-    const html =
-      quotationHTML({
-        branch,
-        quotation,
-        client: clientData,
-        items
-      });
-
-
-    // =========================
-    // PDF
-    // =========================
-
-    const browser =
-      await puppeteer.launch();
-
-    const page =
-      await browser.newPage();
+    const browser = await puppeteer.launch();
+    const page = await browser.newPage();
 
     await page.setContent(html, {
       waitUntil: "networkidle0"
     });
 
-    const pdf =
-      await page.pdf({
-        format: "A4",
-        printBackground: true
-      });
+    const pdf = await page.pdf({
+      format: "A4",
+      printBackground: true
+    });
 
     await browser.close();
 
-
     res.set({
       "Content-Type": "application/pdf",
-      "Content-Disposition":
-        "inline; filename=quotation.pdf"
+      "Content-Disposition": "inline; filename=quotation.pdf"
     });
 
     return res.send(pdf);
 
-  }
-  catch (err) {
+  } catch (err) {
 
     await t.rollback();
+
+    console.error(err);
 
     res.status(500).json({
       error: err.message
     });
-
   }
-
 };
 
 exports.convertQuotationToInvoice = async (req, res) => {
@@ -603,27 +549,46 @@ try {
 
 };
 exports.approveQuotation = async (req, res) => {
+  try {
+    const { id } = req.params;
 
-  const { id } = req.params;
+    // 1️⃣ Fetch quotation by ID
+    const quotation = await Quotation.findByPk(id);
 
-  const q =
-    await Quotation.findByPk(id);
+    if (!quotation) {
+      return res.status(404).json({ error: "Quotation not found" });
+    }
 
-  if (!q)
-    return res
-      .status(404)
-      .json({ error: "Not found" });
+    // 2️⃣ Optional: Only certain roles can approve
+    const allowedRoles = ["super_admin", "super_sales_manager"];
+    if (!allowedRoles.includes(req.user.role)) {
+      return res
+        .status(403)
+        .json({ message: "Access denied: Insufficient role" });
+    }
 
-  q.status = "approved";
+    // 3️⃣ Check if already approved
+    if (quotation.status === "approved") {
+      return res
+        .status(400)
+        .json({ message: "Quotation is already approved" });
+    }
 
-  await q.save();
+    // 4️⃣ Update status
+    quotation.status = "approved";
+    await quotation.save();
 
-  res.json({
-    message: "Approved"
-  });
+    // 5️⃣ Respond with updated data
+    res.status(200).json({
+      message: "Quotation approved successfully",
+      quotation,
+    });
 
+  } catch (err) {
+    console.error("APPROVE QUOTATION ERROR:", err);
+    res.status(500).json({ error: "Server error" });
+  }
 };
-
 exports.generateQuotationPDF = async (req, res) => {
 
   try {
@@ -960,13 +925,18 @@ exports.listQuotations = async (req, res) => {
   }
 };
 
-exports.getSalesDashboard = async (req, res) => {
+exports.reportandanalysis = async (req, res) => {
   try {
 
     const branchId = req.user?.branch_id || null;
 
     // ===============================
-    // 1. CARDS (TOP)
+    // COMMON WHERE
+    // ===============================
+    const whereClause = branchId ? `WHERE branch_id = ${branchId}` : "";
+
+    // ===============================
+    // 1. CARDS
     // ===============================
     const cards = await sequelize.query(`
       SELECT 
@@ -975,76 +945,79 @@ exports.getSalesDashboard = async (req, res) => {
         COUNT(*) AS totalOrders,
         COUNT(DISTINCT client_id) AS activeClients
       FROM quotations
-      ${branchId ? `WHERE branch_id = ${branchId}` : ""}
+      ${whereClause}
     `);
 
     // ===============================
     // 2. REVENUE & ORDERS TREND
     // ===============================
-    const revenueOrders = await sequelize.query(`
+    const revenueTrend = await sequelize.query(`
       SELECT 
         TO_CHAR("createdAt",'Mon') AS month,
         SUM(total_amount) AS revenue,
         COUNT(*) AS orders
       FROM quotations
-      ${branchId ? `WHERE branch_id = ${branchId}` : ""}
+      ${whereClause}
       GROUP BY month, DATE_TRUNC('month',"createdAt")
       ORDER BY DATE_TRUNC('month',"createdAt")
     `);
 
     // ===============================
-    // 3. PRODUCT CATEGORY DISTRIBUTION (PIE)
+    // 3. CATEGORY DISTRIBUTION
     // ===============================
-    const category = await sequelize.query(`
+    const categoryDistribution = await sequelize.query(`
       SELECT 
-        product_name AS name,
-        SUM(amount) AS value
+        COALESCE(qi.product_name, 'Others') AS name,
+        SUM(qi.amount) AS value
       FROM quotation_items qi
       JOIN quotations q ON q.id = qi.quotation_id
       ${branchId ? `WHERE q.branch_id = ${branchId}` : ""}
-      GROUP BY product_name
+      GROUP BY qi.product_name
     `);
 
     // ===============================
-    // 4. WEEKLY ACTIVITY (3 LINES)
+    // 4. WEEKLY ACTIVITY (FIXED ENUM)
     // ===============================
-    const weekly = await sequelize.query(`
+    const weeklyActivity = await sequelize.query(`
       SELECT 
         TO_CHAR("createdAt",'Dy') AS day,
-        COUNT(*) FILTER (WHERE status='quotation') AS quotations,
-        COUNT(*) FILTER (WHERE status='approved') AS invoices,
-        COUNT(*) FILTER (WHERE status='dispatched') AS dispatched
+
+        COUNT(*) FILTER (WHERE status='pending') AS quotations,
+        COUNT(*) FILTER (WHERE status='approved') AS approved,
+        COUNT(*) FILTER (WHERE status='invoiced') AS invoices
+
       FROM quotations
       WHERE "createdAt" >= NOW() - INTERVAL '7 days'
       ${branchId ? `AND branch_id = ${branchId}` : ""}
       GROUP BY day
+      ORDER BY MIN("createdAt")
     `);
 
     // ===============================
-    // 5. MONTHLY PROFIT (BAR)
+    // 5. PROFIT ANALYSIS
     // ===============================
-    const profit = await sequelize.query(`
+    const profitAnalysis = await sequelize.query(`
       SELECT 
         TO_CHAR("createdAt",'Mon') AS month,
         SUM(total_amount * 0.2) AS profit
       FROM quotations
-      ${branchId ? `WHERE branch_id = ${branchId}` : ""}
+      ${whereClause}
       GROUP BY month, DATE_TRUNC('month',"createdAt")
       ORDER BY DATE_TRUNC('month',"createdAt")
     `);
 
     // ===============================
-    // 6. TOP PRODUCTS (TABLE)
+    // 6. TOP PRODUCTS
     // ===============================
     const topProducts = await sequelize.query(`
       SELECT 
-        product_name,
-        SUM(quantity) AS sales,
-        SUM(amount) AS revenue
+        qi.product_name,
+        SUM(qi.quantity) AS sales,
+        SUM(qi.amount) AS revenue
       FROM quotation_items qi
       JOIN quotations q ON q.id = qi.quotation_id
       ${branchId ? `WHERE q.branch_id = ${branchId}` : ""}
-      GROUP BY product_name
+      GROUP BY qi.product_name
       ORDER BY sales DESC
       LIMIT 5
     `);
@@ -1052,78 +1025,185 @@ exports.getSalesDashboard = async (req, res) => {
     // ===============================
     // 7. RECENT TRANSACTIONS
     // ===============================
-    const transactions = await sequelize.query(`
+    const recentTransactions = await sequelize.query(`
       SELECT 
-        quotation_no AS invoice,
-        total_amount AS amount,
-        status,
-        "createdAt"
-      FROM quotations
-      ${branchId ? `WHERE branch_id = ${branchId}` : ""}
-      ORDER BY "createdAt" DESC
+        q.quotation_no AS invoice,
+        c.name AS client,
+        q.total_amount AS amount,
+        q.status
+      FROM quotations q
+      LEFT JOIN clients c ON c.id = q.client_id
+      ${branchId ? `WHERE q.branch_id = ${branchId}` : ""}
+      ORDER BY q."createdAt" DESC
       LIMIT 5
     `);
 
     // ===============================
-    // 8. INVENTORY STATUS
+    // 8. INVENTORY STATUS (FIXED ENUM)
     // ===============================
-    const inventory = await sequelize.query(`
+    const inventoryStatus = await sequelize.query(`
       SELECT 
-        COUNT(*) FILTER (WHERE status='in_stock') AS inStock,
-        COUNT(*) FILTER (WHERE status='low_stock') AS lowStock,
-        COUNT(*) FILTER (WHERE status='out_of_stock') AS outOfStock
+        COUNT(*) FILTER (WHERE status='GOOD') AS "inStock",
+        COUNT(*) FILTER (WHERE status='REPAIRABLE') AS "lowStock",
+        COUNT(*) FILTER (WHERE status='DAMAGED') AS "outOfStock"
       FROM stocks
-      ${branchId ? `WHERE branch_id = ${branchId}` : ""}
+      ${whereClause}
     `);
 
     // ===============================
     // 9. CLIENT BREAKDOWN
     // ===============================
-    const clients = await sequelize.query(`
+    const clientBreakdown = await sequelize.query(`
       SELECT 
-        COUNT(*) FILTER (WHERE createdAt >= NOW() - INTERVAL '30 days') AS newClients,
-        COUNT(*) FILTER (WHERE createdAt < NOW() - INTERVAL '30 days') AS returningClients
+        COUNT(*) FILTER (WHERE "createdAt" >= NOW() - INTERVAL '30 days') AS "newClients",
+        COUNT(*) FILTER (WHERE "createdAt" < NOW() - INTERVAL '30 days') AS "returningClients"
       FROM clients
-      ${branchId ? `WHERE branch_id = ${branchId}` : ""}
+      ${whereClause}
     `);
 
     // ===============================
-    // 10. QUICK STATS
+    // 10. QUICK STATS (FIXED ENUM)
     // ===============================
     const quickStats = await sequelize.query(`
       SELECT 
-        COUNT(*) FILTER (WHERE status='approved') AS approvedQuotations,
-        COUNT(*) FILTER (WHERE status='converted') AS invoicesGenerated,
-        COUNT(*) FILTER (WHERE status='pending') AS pendingApprovals
+        COUNT(*) FILTER (WHERE status='approved') AS "approvedQuotations",
+        COUNT(*) FILTER (WHERE status='invoiced') AS "invoicesGenerated",
+        COUNT(*) FILTER (WHERE status='pending') AS "pendingApprovals"
       FROM quotations
-      ${branchId ? `WHERE branch_id = ${branchId}` : ""}
+      ${whereClause}
     `);
 
     // ===============================
-    // FINAL RESPONSE (UI READY)
+    // FINAL RESPONSE
     // ===============================
     res.json({
       success: true,
 
       cards: cards[0][0],
-
-      revenueTrend: revenueOrders[0],
-
-      categoryDistribution: category[0],
-
-      weeklyActivity: weekly[0],
-
-      profitAnalysis: profit[0],
-
+      revenueTrend: revenueTrend[0],
+      categoryDistribution: categoryDistribution[0],
+      weeklyActivity: weeklyActivity[0],
+      profitAnalysis: profitAnalysis[0],
       topProducts: topProducts[0],
-
-      recentTransactions: transactions[0],
-
-      inventoryStatus: inventory[0][0],
-
-      clientBreakdown: clients[0][0],
-
+      recentTransactions: recentTransactions[0],
+      inventoryStatus: inventoryStatus[0][0],
+      clientBreakdown: clientBreakdown[0][0],
       quickStats: quickStats[0][0]
+
+    });
+
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({
+      success: false,
+      error: err.message
+    });
+  }
+};
+
+//top screen work on this 
+exports.getAdvancedSalesAnalytics = async (req, res) => {
+  try {
+
+    const branchId = req.user?.branch_id || null;
+    const whereClause = branchId ? `WHERE branch_id = ${branchId}` : "";
+
+    // ===============================
+    // 1. QUICK ACTION CARDS
+    // ===============================
+    const quickCards = await sequelize.query(`
+      SELECT 
+        COALESCE(SUM(total_amount),0) AS todaySale,
+        COUNT(*) AS totalOrders,
+        COUNT(*) FILTER (WHERE status='pending') AS pendingQuotation,
+        COUNT(*) FILTER (WHERE status='invoiced') AS readyToDispatch
+      FROM quotations
+      WHERE DATE("createdAt") = CURRENT_DATE
+      ${branchId ? `AND branch_id = ${branchId}` : ""}
+    `);
+
+    // ===============================
+    // 2. SALES ANALYTICS (ONLINE vs OFFLINE)
+    // ===============================
+    const salesAnalytics = await sequelize.query(`
+      SELECT 
+        TO_CHAR("createdAt",'Mon') AS month,
+
+        SUM(CASE WHEN reference_no IS NOT NULL THEN total_amount ELSE 0 END) AS onlineSales,
+        SUM(CASE WHEN reference_no IS NULL THEN total_amount ELSE 0 END) AS offlineSales
+
+      FROM quotations
+      ${whereClause}
+      GROUP BY month, DATE_TRUNC('month',"createdAt")
+      ORDER BY DATE_TRUNC('month',"createdAt")
+    `);
+
+    // ===============================
+    // 3. QUOTATION STATUS (DONUT)
+    // ===============================
+    const quotationStatus = await sequelize.query(`
+      SELECT 
+        COUNT(*) FILTER (WHERE status='pending') AS pending,
+        COUNT(*) FILTER (WHERE status='approved') AS approved,
+        COUNT(*) FILTER (WHERE status='rejected') AS rejected,
+        COUNT(*) FILTER (WHERE status='invoiced') AS invoiced,
+        COALESCE(SUM(total_amount),0) AS totalValue
+      FROM quotations
+      ${whereClause}
+    `);
+
+    // ===============================
+    // 4. SALES BY CATEGORY (UNITS SOLD)
+    // ===============================
+    const categorySales = await sequelize.query(`
+      SELECT 
+        qi.product_name AS category,
+        SUM(qi.quantity) AS units,
+        SUM(qi.amount) AS revenue
+      FROM quotation_items qi
+      JOIN quotations q ON q.id = qi.quotation_id
+      ${branchId ? `WHERE q.branch_id = ${branchId}` : ""}
+      GROUP BY qi.product_name
+      ORDER BY units DESC
+    `);
+
+    // ===============================
+    // 5. RECENT ACTIVITY
+    // ===============================
+    const recentActivity = await sequelize.query(`
+      SELECT 
+        q.quotation_no,
+        c.name AS client,
+        q.total_amount,
+        q.status,
+        q."createdAt"
+      FROM quotations q
+      LEFT JOIN clients c ON c.id = q.client_id
+      ${branchId ? `WHERE q.branch_id = ${branchId}` : ""}
+      ORDER BY q."createdAt" DESC
+      LIMIT 10
+    `);
+
+    // ===============================
+    // FINAL RESPONSE
+    // ===============================
+    res.json({
+      success: true,
+
+      quickAction: {
+        todaySale: quickCards[0][0].todaysale,
+        totalSale: quickCards[0][0].totalorders,
+        pendingQuotation: quickCards[0][0].pendingquotation,
+        readyToDispatch: quickCards[0][0].readytodispatch
+      },
+
+      salesAnalytics: salesAnalytics[0],
+
+      quotationStatus: quotationStatus[0][0],
+
+      categorySales: categorySales[0],
+
+      recentActivity: recentActivity[0]
 
     });
 

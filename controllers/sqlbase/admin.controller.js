@@ -142,10 +142,16 @@ exports.getAllBranches = async (req, res) => {
 
 exports.getGlobalDashboard = async (req, res) => {
   try {
+    // ✅ FIXED ROLE CHECK
+    if (!superRoles.includes(req.user.role)) {
+      return res.status(403).json({
+        message: "Access denied"
+      });
+    }
+
     const totalUsers = await User.count();
     const totalBranches = await Branch.count();
 
-   
     const locations = await Branch.findAll({
       attributes: [
         "location",

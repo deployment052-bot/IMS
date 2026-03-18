@@ -19,4 +19,6 @@ router.post('/gt/:id',auth,checkRole(["sales_manager","admin","super_admin"]),sa
 router.get("/get", auth, checkRole(["sales_manager","admin","finance","super_stock_manager","super_admin"]), salemanager.listQuotations);
 // router.get("/getsales",auth,checkRole(["sales_manager","admin","super_admin"]),salemanager.getClientLedger)
 router.get("/client-ledger/:clientId", auth, checkRole(["sales_manager","admin"]), salemanager.getClientLedgerDetails);
+router.get('/report',auth, checkRole(["sales_manager","admin"]), salemanager.getSalesDashboard)
+
 module.exports=router;

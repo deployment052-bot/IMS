@@ -959,3 +959,179 @@ exports.listQuotations = async (req, res) => {
 
   }
 };
+
+exports.getSalesDashboard = async (req, res) => {
+  try {
+
+    const branchId = req.user?.branch_id || null;
+
+    // ===============================
+    // 1. CARDS (TOP)
+    // ===============================
+    const cards = await sequelize.query(`
+      SELECT 
+        COALESCE(SUM(total_amount),0) AS revenue,
+        COALESCE(AVG(total_amount),0) AS avgOrderValue,
+        COUNT(*) AS totalOrders,
+        COUNT(DISTINCT client_id) AS activeClients
+      FROM quotations
+      ${branchId ? `WHERE branch_id = ${branchId}` : ""}
+    `);
+
+    // ===============================
+    // 2. REVENUE & ORDERS TREND
+    // ===============================
+    const revenueOrders = await sequelize.query(`
+      SELECT 
+        TO_CHAR("createdAt",'Mon') AS month,
+        SUM(total_amount) AS revenue,
+        COUNT(*) AS orders
+      FROM quotations
+      ${branchId ? `WHERE branch_id = ${branchId}` : ""}
+      GROUP BY month, DATE_TRUNC('month',"createdAt")
+      ORDER BY DATE_TRUNC('month',"createdAt")
+    `);
+
+    // ===============================
+    // 3. PRODUCT CATEGORY DISTRIBUTION (PIE)
+    // ===============================
+    const category = await sequelize.query(`
+      SELECT 
+        product_name AS name,
+        SUM(amount) AS value
+      FROM quotation_items qi
+      JOIN quotations q ON q.id = qi.quotation_id
+      ${branchId ? `WHERE q.branch_id = ${branchId}` : ""}
+      GROUP BY product_name
+    `);
+
+    // ===============================
+    // 4. WEEKLY ACTIVITY (3 LINES)
+    // ===============================
+    const weekly = await sequelize.query(`
+      SELECT 
+        TO_CHAR("createdAt",'Dy') AS day,
+        COUNT(*) FILTER (WHERE status='quotation') AS quotations,
+        COUNT(*) FILTER (WHERE status='approved') AS invoices,
+        COUNT(*) FILTER (WHERE status='dispatched') AS dispatched
+      FROM quotations
+      WHERE "createdAt" >= NOW() - INTERVAL '7 days'
+      ${branchId ? `AND branch_id = ${branchId}` : ""}
+      GROUP BY day
+    `);
+
+    // ===============================
+    // 5. MONTHLY PROFIT (BAR)
+    // ===============================
+    const profit = await sequelize.query(`
+      SELECT 
+        TO_CHAR("createdAt",'Mon') AS month,
+        SUM(total_amount * 0.2) AS profit
+      FROM quotations
+      ${branchId ? `WHERE branch_id = ${branchId}` : ""}
+      GROUP BY month, DATE_TRUNC('month',"createdAt")
+      ORDER BY DATE_TRUNC('month',"createdAt")
+    `);
+
+    // ===============================
+    // 6. TOP PRODUCTS (TABLE)
+    // ===============================
+    const topProducts = await sequelize.query(`
+      SELECT 
+        product_name,
+        SUM(quantity) AS sales,
+        SUM(amount) AS revenue
+      FROM quotation_items qi
+      JOIN quotations q ON q.id = qi.quotation_id
+      ${branchId ? `WHERE q.branch_id = ${branchId}` : ""}
+      GROUP BY product_name
+      ORDER BY sales DESC
+      LIMIT 5
+    `);
+
+    // ===============================
+    // 7. RECENT TRANSACTIONS
+    // ===============================
+    const transactions = await sequelize.query(`
+      SELECT 
+        quotation_no AS invoice,
+        total_amount AS amount,
+        status,
+        "createdAt"
+      FROM quotations
+      ${branchId ? `WHERE branch_id = ${branchId}` : ""}
+      ORDER BY "createdAt" DESC
+      LIMIT 5
+    `);
+
+    // ===============================
+    // 8. INVENTORY STATUS
+    // ===============================
+    const inventory = await sequelize.query(`
+      SELECT 
+        COUNT(*) FILTER (WHERE status='in_stock') AS inStock,
+        COUNT(*) FILTER (WHERE status='low_stock') AS lowStock,
+        COUNT(*) FILTER (WHERE status='out_of_stock') AS outOfStock
+      FROM stocks
+      ${branchId ? `WHERE branch_id = ${branchId}` : ""}
+    `);
+
+    // ===============================
+    // 9. CLIENT BREAKDOWN
+    // ===============================
+    const clients = await sequelize.query(`
+      SELECT 
+        COUNT(*) FILTER (WHERE createdAt >= NOW() - INTERVAL '30 days') AS newClients,
+        COUNT(*) FILTER (WHERE createdAt < NOW() - INTERVAL '30 days') AS returningClients
+      FROM clients
+      ${branchId ? `WHERE branch_id = ${branchId}` : ""}
+    `);
+
+    // ===============================
+    // 10. QUICK STATS
+    // ===============================
+    const quickStats = await sequelize.query(`
+      SELECT 
+        COUNT(*) FILTER (WHERE status='approved') AS approvedQuotations,
+        COUNT(*) FILTER (WHERE status='converted') AS invoicesGenerated,
+        COUNT(*) FILTER (WHERE status='pending') AS pendingApprovals
+      FROM quotations
+      ${branchId ? `WHERE branch_id = ${branchId}` : ""}
+    `);
+
+    // ===============================
+    // FINAL RESPONSE (UI READY)
+    // ===============================
+    res.json({
+      success: true,
+
+      cards: cards[0][0],
+
+      revenueTrend: revenueOrders[0],
+
+      categoryDistribution: category[0],
+
+      weeklyActivity: weekly[0],
+
+      profitAnalysis: profit[0],
+
+      topProducts: topProducts[0],
+
+      recentTransactions: transactions[0],
+
+      inventoryStatus: inventory[0][0],
+
+      clientBreakdown: clients[0][0],
+
+      quickStats: quickStats[0][0]
+
+    });
+
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({
+      success: false,
+      error: err.message
+    });
+  }
+};

@@ -174,8 +174,17 @@ exports.getInventoryDashboardCharts = async (req, res) => {
 exports.getBranchOverview = async (req, res) => {
   try {
 
-    const userBranches = req.user?.branches || [];
+    // =========================
+    // 🔥 GET USER BRANCHES
+    // =========================
+    let userBranches = req.user?.branches || [];
 
+    // ✅ fallback (agar login me sirf branch_id ho)
+    if (!userBranches.length && req.user?.branch_id) {
+      userBranches = [req.user.branch_id];
+    }
+
+    // 🚨 FINAL CHECK
     if (!userBranches.length) {
       return res.status(403).json({
         success: false,
@@ -183,20 +192,43 @@ exports.getBranchOverview = async (req, res) => {
       });
     }
 
+    // =========================
+    // 🔥 MAIN QUERY (FIXED)
+    // =========================
     const data = await sequelize.query(
       `
       SELECT 
         b.name AS "branchName",
         s.category,
         COALESCE(SUM(s.quantity),0) AS "currentStock",
-        COALESCE(SUM(CASE WHEN l.type='PURCHASE' THEN l.quantity ELSE 0 END),0) AS "stockIn",
-        COALESCE(SUM(CASE WHEN l.type='SALE' THEN l.quantity ELSE 0 END),0) AS "stockOut"
+
+        COALESCE(SUM(
+          CASE 
+            WHEN l.type='PURCHASE' THEN l.quantity 
+            ELSE 0 
+          END
+        ),0) AS "stockIn",
+
+        COALESCE(SUM(
+          CASE 
+            WHEN l.type='SALE' THEN l.quantity 
+            ELSE 0 
+          END
+        ),0) AS "stockOut"
+
       FROM stocks s
-      LEFT JOIN ledger l ON l.stock_id = s.id
-      LEFT JOIN branches b ON b.id = s.branch_id
-      WHERE s.branch_id = ANY(:branches)
+
+      LEFT JOIN ledger l 
+        ON l.stock_id = s.id
+
+      LEFT JOIN branches b 
+        ON b.id = s.branch_id
+
+      WHERE s.branch_id IN (:branches)   -- ✅ FIXED (ANY → IN)
+
       GROUP BY b.name, s.category
-      ORDER BY b.name
+
+      ORDER BY b.name ASC
       `,
       {
         replacements: { branches: userBranches },
@@ -204,28 +236,32 @@ exports.getBranchOverview = async (req, res) => {
       }
     );
 
+    // =========================
+    // ✅ RESPONSE
+    // =========================
     res.json({
       success: true,
+      totalBranches: userBranches.length,
       data
     });
 
   } catch (error) {
-    console.error(error);
+
+    console.error("Branch Overview Error:", error);
+
     res.status(500).json({
       success: false,
-      message: "Failed to fetch branch overview"
+      message: "Failed to fetch branch overview",
+      error: error.message   // ✅ debugging helpful
     });
   }
 };
-
-
 
 // ============================
 // SINGLE BRANCH DASHBOARD
 // ============================
 exports.getBranchDashboard = async (req, res) => {
   try {
-
     const branch = Number(req.params.branch);
     const userBranches = req.user?.branches || [];
 
@@ -236,7 +272,9 @@ exports.getBranchDashboard = async (req, res) => {
       });
     }
 
-    // DASHBOARD CARDS
+    // =======================
+    // CARDS
+    // =======================
     const cards = await sequelize.query(
       `
       SELECT 
@@ -252,7 +290,47 @@ exports.getBranchDashboard = async (req, res) => {
       }
     );
 
-    // PURCHASE CHART
+    // =======================
+    // PURCHASE AMOUNT
+    // =======================
+    const purchaseAmount = await sequelize.query(
+      `
+      SELECT COALESCE(SUM(l.total),0) AS "purchaseAmount"
+      FROM ledger l
+      JOIN stocks s ON s.id = l.stock_id
+      WHERE l.type='PURCHASE' AND s.branch_id = :branch
+      `,
+      {
+        replacements: { branch },
+        type: QueryTypes.SELECT
+      }
+    );
+
+    // =======================
+    // TRANSIT ITEMS (SAFE)
+    // =======================
+    const transitItems = await sequelize.query(
+      `
+      SELECT COALESCE(SUM(
+        CASE 
+          WHEN l.type='PURCHASE' THEN l.quantity
+          WHEN l.type='SALE' THEN -l.quantity
+          ELSE 0
+        END
+      ),0) AS "transitItems"
+      FROM ledger l
+      JOIN stocks s ON s.id = l.stock_id
+      WHERE s.branch_id = :branch
+      `,
+      {
+        replacements: { branch },
+        type: QueryTypes.SELECT
+      }
+    );
+
+    // =======================
+    // LINE CHART
+    // =======================
     const purchaseChart = await sequelize.query(
       `
       SELECT 
@@ -271,7 +349,9 @@ exports.getBranchDashboard = async (req, res) => {
       }
     );
 
-    // STATUS
+    // =======================
+    // STATUS PIE
+    // =======================
     const status = await sequelize.query(
       `
       SELECT status, COUNT(*) AS total
@@ -297,24 +377,74 @@ exports.getBranchDashboard = async (req, res) => {
       if (row.status === "REPAIRABLE") formattedStatus.repairable = Number(row.total);
     });
 
+    // =======================
+    // TABLE DATA (FIXED)
+    // =======================
+    const table = await sequelize.query(
+      `
+      SELECT 
+        s.item AS "itemName",
+        s.category,
+
+        s.hsn AS "hsnCode",        -- ✅ correct column
+        s.grn AS "grnNo",          -- ✅ correct column
+
+        s.po_number AS "purchaseOrderNo",
+        s.quantity AS "currentStock",
+
+        COALESCE(SUM(CASE WHEN l.type='PURCHASE' THEN l.quantity ELSE 0 END),0) AS "stockIn",
+        COALESCE(SUM(CASE WHEN l.type='SALE' THEN l.quantity ELSE 0 END),0) AS "stockOut",
+
+        0 AS "scrap",              -- ✅ temp (column nahi hai)
+        NULL AS "dispatchDate",    -- ✅ temp
+        NULL AS "deliveryDate",    -- ✅ temp
+
+        s.status
+
+      FROM stocks s
+      LEFT JOIN ledger l ON l.stock_id = s.id
+
+      WHERE s.branch_id = :branch
+
+      GROUP BY s.id
+
+      ORDER BY s.created_at DESC
+
+      LIMIT 50
+      `,
+      {
+        replacements: { branch },
+        type: QueryTypes.SELECT
+      }
+    );
+
+    // =======================
+    // FINAL RESPONSE
+    // =======================
     res.json({
       success: true,
-      cards: cards[0],
+      cards: {
+        ...cards[0],
+        purchaseAmount: purchaseAmount[0].purchaseAmount,
+        transitItems: transitItems[0].transitItems
+      },
       charts: {
         purchaseAmount: purchaseChart,
         agingDistribution: formattedStatus
-      }
+      },
+      table
     });
 
   } catch (error) {
-    console.error(error);
+    console.error("Dashboard Error:", error);
+
     res.status(500).json({
       success: false,
-      message: "Failed to fetch branch dashboard"
+      message: "Failed to fetch branch dashboard",
+      error: error.message
     });
   }
 };
-
 // controllers/inventoryController.js
 
 exports.getFullInventoryDashboard = async (req, res) => {

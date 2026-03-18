@@ -51,7 +51,6 @@ exports.register = async (req, res) => {
   }
 };
 
-
 exports.login = async (req, res) => {
   try {
     const { email, password } = req.body;
@@ -77,16 +76,48 @@ exports.login = async (req, res) => {
       return res.status(403).json({ error: "Account not active" });
     }
 
+    // 🔐 PASSWORD CHECK (uncomment in production)
     // const match = await bcrypt.compare(password, user.password);
     // if (!match) {
     //   return res.status(401).json({ error: "Invalid password" });
     // }
 
+    // =========================
+    // 🔥 FETCH USER BRANCHES
+    // =========================
+
+    let branchIds = [];
+
+    try {
+      const userBranches = await UserBranch.findAll({
+        where: { user_id: user.id },
+        attributes: ["branch_id"],
+      });
+
+      branchIds = userBranches.map(b => b.branch_id);
+
+    } catch (err) {
+      // fallback if mapping table not used
+      if (user.branch_id) {
+        branchIds = [user.branch_id];
+      }
+    }
+
+    if (!branchIds.length) {
+      return res.status(403).json({
+        error: "No branch assigned to user",
+      });
+    }
+
+    // =========================
+    // 🔥 TOKEN
+    // =========================
+
     const token = jwt.sign(
       {
         id: user.id,
         role: user.role.name,
-        branch_id: user.branch_id,
+        branches: branchIds,   // ✅ FIXED
       },
       process.env.JWT_SECRET,
       { expiresIn: "7d" }
@@ -99,7 +130,7 @@ exports.login = async (req, res) => {
         name: user.name,
         email: user.email,
         role: user.role.name,
-        branch_id: user.branch_id,
+        branches: branchIds,   // ✅ FIXED
       },
     });
 

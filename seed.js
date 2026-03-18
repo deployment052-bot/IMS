@@ -1,205 +1,112 @@
-const { sequelize, Role, User, Branch, Stock, Ledger, Client } = require("./model/SQL_Model");
-const bcrypt = require("bcrypt");
+require("dotenv").config();
+const sequelize = require("./config/sqlcon");
 
-const seedData = async () => {
+const { Quotation, QuotationItem } = require("./model/SQL_Model/Quotation");
+const { Client } = require("./model/SQL_Model");
+
+const getRandom = (arr) => arr[Math.floor(Math.random() * arr.length)];
+
+const seedBulkQuotation = async () => {
   try {
+    console.log("🚀 BULK QUOTATION SEED STARTED...");
 
-    console.log("🚀 Seeding started...");
+    await sequelize.authenticate();
+    console.log("✅ DB Connected");
 
-    // ================= SYNC TABLES =================
-    await sequelize.sync({ force: true });
-    console.log("✅ Tables recreated");
+ 
+    const clients = await Client.findAll();
 
-    // ================= ROLES =================
-    const roles = [
-      "super_admin",
-      "admin",
-      "stock_manager",
-      "sales_manager",
-      "purchase_manager",
-      "finance",
-      "inventory_manager"
-    ];
-
-    const roleMap = {};
-
-    for (const r of roles) {
-      const role = await Role.create({ name: r });
-      roleMap[r] = role.id;
+    if (!clients.length) {
+      console.log("❌ No clients found");
+      return;
     }
 
-    console.log("✅ Roles created");
-
-    // ================= SUPER ADMIN =================
-    const hashedPassword = await bcrypt.hash("123456", 10);
-
-    const superAdmin = await User.create({
-      name: "Super Admin",
-      email: "super@ims.com",
-      password: hashedPassword,
-      role_id: roleMap.super_admin,
-      is_active: true
-    });
-
-    console.log("✅ Super Admin created");
-
-    // ================= CITY DATA =================
-    const cities = [
-      { city: "Hyderabad", state: "Telangana" },
-      { city: "Kolkata", state: "West Bengal" },
-      { city: "Patna", state: "Bihar" },
-      { city: "Ahmedabad", state: "Gujarat" },
-      { city: "Mumbai", state: "Maharashtra" },
-      { city: "Bangalore", state: "Karnataka" }
+    const products = [
+      { name: "Cement", hsn: "2523", unit: "bag", price: 300 },
+      { name: "Steel Rod", hsn: "7214", unit: "piece", price: 1000 },
+      { name: "Bricks", hsn: "6901", unit: "piece", price: 10 },
+      { name: "Sand", hsn: "2505", unit: "ton", price: 1500 },
+      { name: "Tiles", hsn: "6907", unit: "box", price: 800 }
     ];
 
-    for (const c of cities) {
+    // =========================
+    // LOOP CREATE QUOTATIONS
+    // =========================
+    for (let i = 0; i < 50; i++) {
 
-      // ================= CITY HUB =================
-      const cityHub = await Branch.create({
-        code: `HUB-${c.city.toUpperCase()}`,
-        name: `${c.city} Hub`,
-        location: c.city,
-        state: c.state,
-        type: "WAREHOUSE",
-        status: "ACTIVE",
-        contact_number: "9999999999",
-        email: `${c.city.toLowerCase()}hub@ims.com`,
-        parent_branch_id: null
+      const client = getRandom(clients);
+
+      const quotation = await Quotation.create({
+        quotation_no: "QT-" + Date.now() + "-" + i,
+        client_id: client.id,
+        branch_id: client.branch_id || 1,
+        total_amount: 0,
+        gst_amount: 0,
+        valid_till: new Date(Date.now() + 5 * 24 * 60 * 60 * 1000),
+        reference_no: "REF-" + i,
+        terms: "Payment within 7 days",
+        notes: "Auto generated quotation",
+        status: "pending"
       });
 
-      console.log(`🏙 ${c.city} Hub created`);
+      // =========================
+      // CREATE RANDOM ITEMS
+      // =========================
+      const itemCount = Math.floor(Math.random() * 3) + 2; // 2–4 items
 
-      // ================= BRANCHES =================
-      for (let i = 1; i <= 3; i++) {
+      let totalAmount = 0;
+      let gstAmount = 0;
 
-        const branch = await Branch.create({
-          code: `${c.city.slice(0,3).toUpperCase()}-${i}`,
-          name: `${c.city} Branch ${i}`,
-          location: c.city,
-          state: c.state,
-          type: "WAREHOUSE",
-          status: "ACTIVE",
-          contact_number: `99999999${i}`,
-          email: `${c.city.toLowerCase()}${i}@ims.com`,
-          parent_branch_id: cityHub.id
+      const items = [];
+
+      for (let j = 0; j < itemCount; j++) {
+        const product = getRandom(products);
+
+        const qty = Math.floor(Math.random() * 50) + 1;
+        const subtotal = qty * product.price;
+
+        const cgst = 9;
+        const sgst = 9;
+
+        const gst = subtotal * 0.18;
+        const amount = subtotal + gst;
+
+        totalAmount += amount;
+        gstAmount += gst;
+
+        items.push({
+          quotation_id: quotation.id,
+          product_name: product.name,
+          quantity: qty,
+          unit_price: product.price,
+          unit: product.unit,
+          hsn: product.hsn,
+          cgst,
+          sgst,
+          subtotal,
+          amount
         });
-
-        // ================= USERS =================
-        const users = [
-          { name:`${branch.name} Admin`, role:"admin", email:`admin_${branch.code}@ims.com` },
-          { name:`${branch.name} Stock Manager`, role:"stock_manager", email:`stock_${branch.code}@ims.com` },
-          { name:`${branch.name} Sales Manager`, role:"sales_manager", email:`sales_${branch.code}@ims.com` },
-          { name:`${branch.name} Purchase Manager`, role:"purchase_manager", email:`purchase_${branch.code}@ims.com` },
-          { name:`${branch.name} Finance`, role:"finance", email:`finance_${branch.code}@ims.com` },
-          { name:`${branch.name} Inventory Manager`, role:"inventory_manager", email:`inventory_${branch.code}@ims.com` }
-        ];
-
-        for (const u of users) {
-
-          await User.create({
-            name: u.name,
-            email: u.email,
-            password: hashedPassword,
-            role_id: roleMap[u.role],
-            branch_id: branch.id,
-            is_active: true
-          });
-
-        }
-
-        // ================= STOCK =================
-        const stockItems = [];
-
-        for (let s = 1; s <= 50; s++) {
-
-          const qty = Math.floor(Math.random() * 100) + 1;
-          const rate = Math.floor(Math.random() * 5000) + 100;
-
-          stockItems.push({
-            branch_id: branch.id,
-            item: `Item-${s}`,
-            quantity: qty,
-            rate,
-            value: qty * rate,
-            owner_id: superAdmin.id
-          });
-
-        }
-
-        await Stock.bulkCreate(stockItems);
-
-        // ================= CLIENTS =================
-        const clients = [];
-
-        for (let i = 1; i <= 20; i++) {
-
-          clients.push({
-            client_code: `CL-${branch.id}-${i}`,
-            name: `Client ${branch.id}-${i}`,
-            phone: `98${Math.floor(10000000 + Math.random()*90000000)}`,
-            email: `client${branch.id}${i}@demo.com`,
-            address: `Address ${branch.location}`,
-            gst_number: `GST${Math.floor(100000000000 + Math.random()*900000000000)}`,
-            credit_limit: 50000,
-            branch_id: branch.id
-          });
-
-        }
-
-        await Client.bulkCreate(clients);
-
-        // ================= LEDGER =================
-        const stocks = await Stock.findAll({ where:{ branch_id: branch.id } });
-
-        const ledgerEntries = [];
-
-        for (let i = 0; i < 25; i++) {
-
-          const stock = stocks[Math.floor(Math.random()*stocks.length)];
-          const qty = Math.floor(Math.random()*5)+1;
-
-          ledgerEntries.push({
-            branch_id: branch.id,
-            stock_id: stock.id,
-            type:"SALE",
-            quantity: qty,
-            rate: stock.rate,
-            total: qty * stock.rate,
-            reference_no:`INV-${Date.now()}-${Math.random()}`,
-            created_by: superAdmin.id
-          });
-
-          ledgerEntries.push({
-            branch_id: branch.id,
-            stock_id: stock.id,
-            type:"PURCHASE",
-            quantity: qty+2,
-            rate: stock.rate,
-            total: (qty+2) * stock.rate,
-            reference_no:`PUR-${Date.now()}-${Math.random()}`,
-            created_by: superAdmin.id
-          });
-
-        }
-
-        await Ledger.bulkCreate(ledgerEntries);
-
-        console.log(`🏢 ${branch.name} setup complete`);
-
       }
 
+      // SAVE ITEMS
+      await QuotationItem.bulkCreate(items);
+
+      // UPDATE TOTAL
+      await quotation.update({
+        total_amount: totalAmount,
+        gst_amount: gstAmount
+      });
+
+      console.log(`✅ Quotation ${quotation.quotation_no} created`);
     }
 
-    console.log("🎉 ENTERPRISE IMS SEED COMPLETE");
-    process.exit();
+    console.log("🎉 BULK SEED COMPLETED");
 
-  } catch (err) {
-
-    console.error("❌ Seed error:", err);
-    process.exit(1);
-
+  } catch (error) {
+    console.error("❌ Seed Error:", error.message);
+  } finally {
+    await sequelize.close();
   }
 };
 
-seedData();
+seedBulkQuotation();

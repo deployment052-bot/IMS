@@ -62,9 +62,6 @@ router.get(
 );
 
 
-// =====================================
-// BRANCH DATA
-// =====================================
 
 // Branch overview (all branches)
 router.get(
@@ -96,11 +93,7 @@ router.get(
 );
 
 
-// =====================================
-// PURCHASE / SALES
-// =====================================
 
-// Purchase vs sales summary
 router.get(
   "/inventory/purchase-sales-summary",
   auth,

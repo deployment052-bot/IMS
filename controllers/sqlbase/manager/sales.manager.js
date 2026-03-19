@@ -297,9 +297,11 @@ exports.createQuotation = async (req, res) => {
 
     const html = quotationHTML({ branch, quotation, client: clientData, items });
 
-    const browser = await puppeteer.launch({
-  headless: true,
-  args: ["--no-sandbox", "--disable-setuid-sandbox"]
+  const browser = await puppeteer.launch({
+  headless: "new",
+  args: ["--no-sandbox", "--disable-setuid-sandbox"],
+  executablePath: puppeteer.executablePath(),
+  timeout: 60000
 });
     const page = await browser.newPage();
 
@@ -647,9 +649,11 @@ exports.generateQuotationPDF = async (req, res) => {
     `;
 
 
-   const browser = await puppeteer.launch({
-  headless: true,
-  args: ["--no-sandbox", "--disable-setuid-sandbox"]
+const browser = await puppeteer.launch({
+  headless: "new",
+  args: ["--no-sandbox", "--disable-setuid-sandbox"],
+  executablePath: puppeteer.executablePath(),
+  timeout: 60000
 });
 
     const page = await browser.newPage();

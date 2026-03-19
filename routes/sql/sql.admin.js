@@ -69,4 +69,5 @@ router.get('/brach/:branchId',auth,checkRole(['admin','super_admin']),admincontr
 router.get("/d/get-users", auth,checkRole(['admin','super_admin']),admincontroller.getAllUsersForDashboard);
 router.get("/d/branch-overview",auth,checkRole(['super_admin']), admincontroller.getBranchOverview);
 router.get("/d/locationbranch",auth,checkRole(['super_admin']),admincontroller.getLocationWiseSummary)// ye h location k hisab s 
+router.get('/d/report',auth,checkRole(['super_admin']),admincontroller.getReportsAnalytics)
 module.exports = router;

@@ -48,7 +48,7 @@ exports.createBranch = async (req, res) => {
       });
     }
 
-    // ================= CHECK BRANCH =================
+    
     const exists = await Branch.findOne({
       where: {
         [Op.or]: [{ name }, { code }]
@@ -61,7 +61,6 @@ exports.createBranch = async (req, res) => {
       });
     }
 
-    // ================= CREATE BRANCH =================
     const branch = await Branch.create(
       {
         name,
@@ -74,7 +73,7 @@ exports.createBranch = async (req, res) => {
       { transaction: t }
     );
 
-    // ================= ROLES FETCH =================
+
     const roles = await Role.findAll();
 
     const roleMap = {};
@@ -82,7 +81,7 @@ exports.createBranch = async (req, res) => {
       roleMap[r.name] = r.id;
     });
 
-    // ================= USERS TO CREATE =================
+   
     const usersToCreate = [
       { role: "admin", prefix: "admin" },
       { role: "sales_manager", prefix: "sales" },
@@ -119,7 +118,7 @@ exports.createBranch = async (req, res) => {
 
     await t.commit();
 
-    // ================= RESPONSE =================
+    
     res.status(201).json({
       message: "Branch + Users created successfully",
       branch,
@@ -299,56 +298,102 @@ exports.getBranchDashboard = async (req, res) => {
       dateFilter = { created_at: { [Op.gte]: start } };
     }
 
-    const where = {
-      branch_id: branchId,
-      ...dateFilter
-    };
-
     // =========================
-    // STOCK + USERS
+    // STOCK DATA
     // =========================
-    const [stocks, users] = await Promise.all([
-      Stock.findAll({ where }),
-      User.findAll({
-        where: { branch_id: branchId },
-        include: { association: "role", attributes: ["name"] }
-      })
-    ]);
-
-    // =========================
-    // CHART DATA
-    // =========================
-    const barChart = await Stock.findAll({
-      where,
-      attributes: [
-        [sequelize.fn("DATE", sequelize.col("created_at")), "date"],
-        [sequelize.fn("SUM", sequelize.col("quantity")), "stockIn"]
-      ],
-      group: ["date"],
-      order: [["date", "ASC"]],
-      raw: true
-    });
-
-    const lineChart = await Stock.findAll({
-      where,
-      attributes: [
-        [sequelize.fn("DATE", sequelize.col("created_at")), "date"],
-        [sequelize.fn("SUM", sequelize.col("value")), "totalValue"]
-      ],
-      group: ["date"],
-      order: [["date", "ASC"]],
-      raw: true
+    const stocks = await Stock.findAll({
+      where: { branch_id: branchId }
     });
 
     // =========================
-    // TABLE DATA CLEANUP
-    // (NULL values avoid)
+    // USERS
+    // =========================
+    const users = await User.findAll({
+      where: { branch_id: branchId },
+      include: { association: "role", attributes: ["name"] }
+    });
+
+    // =========================
+    // STOCK IN / OUT (BAR GRAPH)
+    // =========================
+    const stockMovement = await StockMovement.findAll({
+      where: { branch_id: branchId, ...dateFilter },
+      attributes: [
+        [
+          sequelize.literal(`TO_CHAR("created_at", 'IW')`),
+          "week"
+        ],
+        [
+          sequelize.fn(
+            "SUM",
+            sequelize.literal(`CASE WHEN type='IN' THEN quantity ELSE 0 END`)
+          ),
+          "stockIn"
+        ],
+        [
+          sequelize.fn(
+            "SUM",
+            sequelize.literal(`CASE WHEN type='OUT' THEN quantity ELSE 0 END`)
+          ),
+          "stockOut"
+        ]
+      ],
+      group: [sequelize.literal(`TO_CHAR("created_at", 'IW')`)],
+      order: [[sequelize.literal(`TO_CHAR("created_at", 'IW')`), "ASC"]],
+      raw: true
+    });
+
+    const barChart = stockMovement.map((d, i) => ({
+      week: `Week ${i + 1}`,
+      stockIn: Number(d.stockIn),
+      stockOut: Number(d.stockOut)
+    }));
+
+    // =========================
+    // SALES / PURCHASE (LINE GRAPH)
+    // =========================
+    const salesData = await Ledger.findAll({
+      where: { branch_id: branchId, ...dateFilter },
+      attributes: [
+        [
+          sequelize.literal(`TO_CHAR("created_at", 'IW')`),
+          "week"
+        ],
+        [
+          sequelize.fn(
+            "SUM",
+            sequelize.literal(`CASE WHEN type='SALE' THEN total ELSE 0 END`)
+          ),
+          "sales"
+        ],
+        [
+          sequelize.fn(
+            "SUM",
+            sequelize.literal(`CASE WHEN type='PURCHASE' THEN total ELSE 0 END`)
+          ),
+          "purchase"
+        ]
+      ],
+      group: [sequelize.literal(`TO_CHAR("created_at", 'IW')`)],
+      order: [[sequelize.literal(`TO_CHAR("created_at", 'IW')`), "ASC"]],
+      raw: true
+    });
+
+    const lineChart = salesData.map((d, i) => ({
+      week: `Week ${i + 1}`,
+      sales: Number(d.sales),
+      purchase: Number(d.purchase)
+    }));
+
+    // =========================
+    // TABLE FORMAT
     // =========================
     const tableStocks = stocks.map((s) => ({
       id: s.id,
       item: s.item,
       category: s.category || "General",
-      quantity: s.quantity,
+      quantity:
+        s.quantity >= 1000 ? `${Math.floor(s.quantity / 1000)}K` : s.quantity,
       hsn: s.hsn || "-",
       grn: s.grn || "-",
       batch_no: s.batch_no || `BATCH-${s.id}`,
@@ -357,24 +402,34 @@ exports.getBranchDashboard = async (req, res) => {
     }));
 
     // =========================
-    // RESPONSE (IMAGE LIKE)
+    // STATS
+    // =========================
+    const totalStock = stocks.reduce((sum, i) => sum + i.quantity, 0);
+    const totalValue = stocks.reduce((sum, i) => sum + i.value, 0);
+
+    const totalSales =
+      (await Ledger.sum("total", {
+        where: { branch_id: branchId, type: "SALE" }
+      })) || 0;
+
+    const agingItems = tableStocks.filter((s) => s.aging > 5).length;
+
+    // =========================
+    // FINAL RESPONSE
     // =========================
     res.json({
       branchInfo: branch,
 
       stats: {
-        totalStock: stocks.reduce((sum, i) => sum + i.quantity, 0),
-        totalValue: stocks.reduce((sum, i) => sum + i.value, 0),
-        totalUsers: users.length,
-
-        // demo for now
-        totalSales: Math.floor(stocks.length * 2),
-        agingItems: tableStocks.filter(s => s.aging > 5).length
+        totalStock,
+        totalValue,
+        totalSales,
+        agingItems
       },
 
       charts: {
-        barChart,
-        lineChart
+        barChart,   // Stock IN / OUT
+        lineChart   // Sales / Purchase
       },
 
       stocks: tableStocks,
@@ -382,6 +437,7 @@ exports.getBranchDashboard = async (req, res) => {
     });
 
   } catch (err) {
+    console.error("BRANCH DASHBOARD ERROR:", err);
     res.status(500).json({ error: err.message });
   }
 };
@@ -1160,6 +1216,181 @@ exports.getLocationWiseSummary = async (req, res) => {
     });
 
   } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+};
+
+exports.getReportsAnalytics = async (req, res) => {
+  try {
+
+    // =========================
+    // 🔹 1. SALES / PURCHASE TREND (LINE GRAPH)
+    // =========================
+    const trendRaw = await Ledger.findAll({
+      attributes: [
+        [sequelize.col("branch.name"), "branch"],
+
+        [
+          sequelize.fn(
+            "SUM",
+            sequelize.literal(`
+              CASE 
+                WHEN "Ledger"."type"='SALE' 
+                THEN "Ledger"."total" 
+                ELSE 0 
+              END
+            `)
+          ),
+          "sales"
+        ],
+
+        [
+          sequelize.fn(
+            "SUM",
+            sequelize.literal(`
+              CASE 
+                WHEN "Ledger"."type"='PURCHASE' 
+                THEN "Ledger"."total" 
+                ELSE 0 
+              END
+            `)
+          ),
+          "purchase"
+        ]
+      ],
+
+      include: [
+        {
+          model: Branch,
+          as: "branch",
+          attributes: []
+        }
+      ],
+
+      group: ["branch.name"],
+      raw: true
+    });
+
+    const trendChart = trendRaw.map((t) => ({
+      name: t.branch,
+      repairable: Number(t.sales), // green line
+      scrap: Number(t.purchase)    // red line
+    }));
+
+    // =========================
+    // 🔹 2. SCRAP & REPAIRABLE (BAR GRAPH)
+    // =========================
+    const scrapRaw = await Stock.findAll({
+      attributes: [
+        "category",
+
+        [
+          sequelize.fn(
+            "SUM",
+            sequelize.literal(`
+              CASE 
+                WHEN "Stock"."status"='REPAIRABLE' 
+                THEN "Stock"."quantity" 
+                ELSE 0 
+              END
+            `)
+          ),
+          "repairable"
+        ],
+
+        [
+          sequelize.fn(
+            "SUM",
+            sequelize.literal(`
+              CASE 
+                WHEN "Stock"."status"='DAMAGED' 
+                THEN "Stock"."quantity" 
+                ELSE 0 
+              END
+            `)
+          ),
+          "scrap"
+        ]
+      ],
+
+      group: ["category"],
+      raw: true
+    });
+
+    const scrapChart = scrapRaw.map((s) => ({
+      category: s.category || "Others",
+      repairable: Number(s.repairable),
+      scrap: Number(s.scrap)
+    }));
+
+    // =========================
+    // 🔹 3. TRANSIT GOODS (DONUT)
+    // =========================
+    const transitRaw = await Stock.findAll({
+      attributes: [
+        "category",
+        [sequelize.fn("SUM", sequelize.col("quantity")), "total"]
+      ],
+      group: ["category"],
+      raw: true
+    });
+
+    const totalQty = transitRaw.reduce((sum, i) => sum + Number(i.total), 0);
+
+    const transitChart = transitRaw.map((t) => ({
+      name: t.category,
+      value: Number(t.total),
+      percentage: totalQty
+        ? ((t.total / totalQty) * 100).toFixed(1)
+        : 0
+    }));
+
+    // =========================
+    // 🔹 4. REPORTS TABLE
+    // =========================
+    const reports = [
+      {
+        name: "Monthly Sales Report - January 2026",
+        type: "Sale",
+        date: "04-02-2026",
+        generatedBy: "Admin",
+        format: "PDF"
+      },
+      {
+        name: "Inventory Aging Analysis Q4 2025",
+        type: "Inventory",
+        date: "04-02-2026",
+        generatedBy: "Sales Manager",
+        format: "CSV"
+      },
+      {
+        name: "Financial Statement - December 2025",
+        type: "Financial",
+        date: "04-02-2026",
+        generatedBy: "System",
+        format: "Excel"
+      },
+      {
+        name: "User Activity Log - Week 5",
+        type: "Users",
+        date: "04-02-2026",
+        generatedBy: "Admin",
+        format: "PDF"
+      }
+    ];
+
+    // =========================
+    // ✅ FINAL RESPONSE
+    // =========================
+    res.json({
+      trendChart,     // 📈 top graph
+      scrapChart,     // 📊 bar graph
+      transitChart,   // 🍩 donut
+      reports         // 📋 table
+    });
+
+  } catch (err) {
+    console.error("REPORT DASHBOARD ERROR:", err);
     res.status(500).json({ error: err.message });
   }
 };

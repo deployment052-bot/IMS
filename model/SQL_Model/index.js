@@ -125,6 +125,8 @@ const initDB = async () => {
       "super_stock_manager",
       "inventory_manager",
       "purchase_manager",
+       "sales_person",
+      "inventory_person",
       "finance"
     ];
 

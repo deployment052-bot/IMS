@@ -9,6 +9,7 @@ const {
   sequelize
 } = require("../../../model/SQL_Model");
 const pdf = require("html-pdf");
+const PDFDocument = require("pdfkit");
 const puppeteer = require("puppeteer");
 const { generateEwayBill } = require("../../../utils/ewayService");
 const { quotationHTML } = require("../../../utils/qt");
@@ -270,34 +271,64 @@ exports.createQuotation = async (req, res) => {
 
     await t.commit();
 
-    // ================= FETCH DATA FOR PDF =================
+    // ================= FETCH DATA =================
     const branch = await Branch.findByPk(branch_id);
 
     const items = await QuotationItem.findAll({
       where: { quotation_id: quotation.id },
     });
 
-    const html = quotationHTML({
-      branch,
-      quotation,
-      client: clientData,
-      items,
+    // ================= PDF WITH PDFKIT =================
+    const doc = new PDFDocument({ margin: 30 });
+
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader(
+      "Content-Disposition",
+      `inline; filename=${quotation_no}.pdf`
+    );
+
+    doc.pipe(res);
+
+    // HEADER
+    doc.fontSize(16).text(branch.name || "", { align: "center" });
+    doc.fontSize(10).text(branch.address || "", { align: "center" });
+    doc.text(`GST: ${branch.gst || ""}`, { align: "center" });
+    doc.moveDown();
+
+    doc.fontSize(14).text("QUOTATION", { align: "center" });
+    doc.moveDown();
+
+    // DETAILS
+    doc.fontSize(10);
+    doc.text(`Quotation No: ${quotation.quotation_no}`);
+    doc.text(`Date: ${new Date(quotation.createdAt).toDateString()}`);
+    doc.text(`Status: ${quotation.status}`);
+    doc.moveDown();
+
+    doc.text(`Billing To:`);
+    doc.text(`${clientData.name}`);
+    doc.text(`${clientData.address}`);
+    doc.moveDown();
+
+    // TABLE HEADER
+    doc.text("No  Item  Qty  Rate  Total");
+    doc.moveDown();
+
+    // ITEMS
+    items.forEach((it, i) => {
+      doc.text(
+        `${i + 1}  ${it.product_name}  ${it.quantity}  ${it.unit_price}  ${it.amount}`
+      );
     });
 
-    // ================= PDF GENERATION (html-pdf) =================
-    pdf.create(html, { format: "A4" }).toBuffer((err, buffer) => {
-      if (err) {
-        console.error(err);
-        return res.status(500).json({ error: "PDF generation failed" });
-      }
+    doc.moveDown(2);
 
-      res.set({
-        "Content-Type": "application/pdf",
-        "Content-Disposition": `inline; filename=${quotation_no}.pdf`,
-      });
+    // TOTAL
+    doc.text(`Subtotal: ${subtotal}`);
+    doc.text(`GST: ${gst_amount}`);
+    doc.text(`Grand Total: ${grand_total}`);
 
-      return res.send(buffer);
-    });
+    doc.end();
 
   } catch (err) {
     try {
@@ -565,99 +596,82 @@ exports.generateQuotationPDF = async (req, res) => {
     const client = quotation.Client;
     const branch = quotation.Branch;
 
-    let rows = "";
+    const doc = new PDFDocument({ margin: 30 });
+
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader(
+      "Content-Disposition",
+      `inline; filename=${quotation.quotation_no}.pdf`
+    );
+
+    doc.pipe(res);
+
+    // ================= HEADER =================
+    doc.fontSize(16).text(branch.name || "", { align: "center" });
+    doc.fontSize(10).text(branch.address || "", { align: "center" });
+    doc.text(`GST: ${branch.gst || ""}`, { align: "center" });
+    doc.moveDown();
+
+    doc.fontSize(14).text("QUOTATION", { align: "center" });
+    doc.moveDown();
+
+    // ================= DETAILS =================
+    doc.fontSize(10);
+    doc.text(`Quotation No: ${quotation.quotation_no}`);
+    doc.text(`Date: ${new Date(quotation.createdAt).toDateString()}`);
+    doc.text(`Status: ${quotation.status}`);
+    doc.moveDown();
+
+    doc.text(`Billing To:`);
+    doc.text(`${client.name}`);
+    doc.text(`${client.address}`);
+    doc.moveDown();
+
+    // ================= TABLE HEADER =================
+    doc.fontSize(9);
+    doc.text("#", 30);
+    doc.text("Item", 60);
+    doc.text("Qty", 200);
+    doc.text("Rate", 240);
+    doc.text("Taxable", 300);
+    doc.text("Total", 380);
+
+    doc.moveDown();
+
+    // ================= ITEMS =================
+    let y = doc.y;
 
     items.forEach((it, i) => {
-      rows += `
-      <tr>
-        <td>${i + 1}</td>
-        <td>${it.product_name}</td>
-        <td>${it.hsn || ""}</td>
-        <td>${it.quantity}</td>
-        <td>${it.unit || ""}</td>
-        <td>${Number(it.unit_price).toFixed(2)}</td>
-        <td>${Number(it.subtotal).toFixed(2)}</td>
-        <td>${Number(it.cgst || 0).toFixed(2)}</td>
-        <td>${Number(it.sgst || 0).toFixed(2)}</td>
-        <td>${Number(it.amount || 0).toFixed(2)}</td>
-      </tr>
-      `;
+      doc.text(i + 1, 30, y);
+      doc.text(it.product_name, 60, y);
+      doc.text(it.quantity, 200, y);
+      doc.text(Number(it.unit_price).toFixed(2), 240, y);
+      doc.text(Number(it.subtotal).toFixed(2), 300, y);
+      doc.text(Number(it.amount).toFixed(2), 380, y);
+
+      y += 20;
     });
 
-    const html = `
-    <html>
-      <head>
-        <style>
-          body { font-family: Arial; font-size: 12px; padding: 10px; }
-          h2, h3, h4 { margin: 5px 0; }
-          table { width: 100%; border-collapse: collapse; margin-top: 10px; }
-          th, td { border: 1px solid #000; padding: 6px; text-align: left; }
-          th { background: #f2f2f2; }
-        </style>
-      </head>
-      <body>
+    doc.moveDown(2);
 
-        <h2>${branch.name || ""}</h2>
-        <p>${branch.address || ""}</p>
-        <p><b>GST:</b> ${branch.gst || ""}</p>
+    // ================= TOTAL =================
+    doc.fontSize(10);
+    doc.text(`Subtotal: ${quotation.total_amount - quotation.gst_amount}`);
+    doc.text(`GST: ${quotation.gst_amount}`);
+    doc.text(`Grand Total: ${quotation.total_amount}`);
 
-        <h3>QUOTATION</h3>
+    doc.moveDown();
+    doc.text("Computer generated quotation.");
 
-        <p><b>No:</b> ${quotation.quotation_no}</p>
-        <p><b>Date:</b> ${new Date(quotation.createdAt).toDateString()}</p>
-
-        <h4>Billing</h4>
-        <p>${client.name || ""}</p>
-        <p>${client.address || ""}</p>
-
-        <table>
-          <tr>
-            <th>#</th>
-            <th>Item</th>
-            <th>HSN</th>
-            <th>Qty</th>
-            <th>Unit</th>
-            <th>Rate</th>
-            <th>Taxable</th>
-            <th>CGST</th>
-            <th>SGST</th>
-            <th>Total</th>
-          </tr>
-
-          ${rows}
-
-        </table>
-
-        <h3>Total: ${Number(quotation.total_amount).toFixed(2)}</h3>
-        <h3>GST: ${Number(quotation.gst_amount).toFixed(2)}</h3>
-
-      </body>
-    </html>
-    `;
-
-    // ================= PDF GENERATION =================
-    pdf.create(html, { format: "A4" }).toBuffer((err, buffer) => {
-      if (err) {
-        console.error(err);
-        return res.status(500).json({ error: "PDF generation failed" });
-      }
-
-      res.set({
-        "Content-Type": "application/pdf",
-        "Content-Disposition": `inline; filename=${quotation.quotation_no}.pdf`,
-      });
-
-      return res.send(buffer);
-    });
+    doc.end();
 
   } catch (err) {
     console.error(err);
-    return res.status(500).json({
+    res.status(500).json({
       error: err.message,
     });
   }
 };
-
 exports.createSaleEntry = async (req, res) => {
   const t = await sequelize.transaction();
   try {

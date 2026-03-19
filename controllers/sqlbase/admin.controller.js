@@ -1,6 +1,8 @@
-const { Branch, User, Role, Stock, sequelize } = require("../../model/SQL_Model");
+const { Branch, User, Role, Stock, sequelize, Ledger,  ClientLedger,
+ 
+  QuotationItem } = require("../../model/SQL_Model");
 const { Op } = require("sequelize");
-
+const StockMovement = require("../../model/SQL_Model/stockmovement");
 function getDateFilter(range) {
   const now = new Date();
 
@@ -30,91 +32,98 @@ function getDateFilter(range) {
 
 
 
+ generatePassword = () => {
+  return Math.random().toString(36).slice(-8);
+};
+
 exports.createBranch = async (req, res) => {
-  const t = await sequelize.transaction(); // safety transaction
+  const t = await sequelize.transaction();
 
   try {
-    const {
-      name,
-      code,
-      location,
-      type,
-      adminEmail,
-      adminPassword
-    } = req.body;
+    const { name, code, location, type, state } = req.body;
 
-    if (!name || !code || !location || !type || !adminEmail || !adminPassword) {
+    if (!name || !code || !location || !type || !state) {
       return res.status(400).json({
-        error: "Branch info + admin email/password required"
+        error: "All branch fields required"
       });
     }
 
-    // branch exists check
+    // ================= CHECK BRANCH =================
     const exists = await Branch.findOne({
       where: {
-        [sequelize.Op.or]: [{ name }, { code }]
+        [Op.or]: [{ name }, { code }]
       }
     });
 
     if (exists) {
       return res.status(400).json({
-        error: "Branch name or code already exists"
+        error: "Branch already exists"
       });
     }
 
-    // admin role get
-    const adminRole = await Role.findOne({
-      where: { name: "admin" }
-    });
-
-    if (!adminRole) {
-      return res.status(400).json({
-        error: "Admin role not found in DB"
-      });
-    }
-
-    // check admin email exists
-    const emailExists = await User.findOne({
-      where: { email: adminEmail }
-    });
-
-    if (emailExists) {
-      return res.status(400).json({
-        error: "Admin email already exists"
-      });
-    }
-
+    // ================= CREATE BRANCH =================
     const branch = await Branch.create(
       {
         name,
         code,
         location,
         type,
+        state,
         status: "ACTIVE"
       },
       { transaction: t }
     );
 
+    // ================= ROLES FETCH =================
+    const roles = await Role.findAll();
 
-    const adminUser = await User.create(
-      {
-        name: `${name} Admin`,
-        email: adminEmail,
-        password: adminPassword, // hashed by hook
-        role_id: adminRole.id,
-        branch_id: branch.id
-      },
-      { transaction: t }
-    );
+    const roleMap = {};
+    roles.forEach(r => {
+      roleMap[r.name] = r.id;
+    });
+
+    // ================= USERS TO CREATE =================
+    const usersToCreate = [
+      { role: "admin", prefix: "admin" },
+      { role: "sales_manager", prefix: "sales" },
+      { role: "inventory_manager", prefix: "inventory" }
+    ];
+
+    const createdUsers = [];
+
+    for (const u of usersToCreate) {
+      if (!roleMap[u.role]) {
+        throw new Error(`${u.role} role not found in DB`);
+      }
+
+      const password = generatePassword();
+      const email = `${u.prefix}_${code}@company.com`;
+
+      const user = await User.create(
+        {
+          name: `${name} ${u.role}`,
+          email,
+          password,
+          role_id: roleMap[u.role],
+          branch_id: branch.id
+        },
+        { transaction: t }
+      );
+
+      createdUsers.push({
+        role: u.role,
+        email,
+        password
+      });
+    }
 
     await t.commit();
 
+    // ================= RESPONSE =================
     res.status(201).json({
-      message: "Branch + Admin created successfully",
+      message: "Branch + Users created successfully",
       branch,
-      admin: {
-        email: adminUser.email
-      }
+      users: createdUsers
     });
 
   } catch (err) {
@@ -122,7 +131,6 @@ exports.createBranch = async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 };
-
 
 
 exports.getAllBranches = async (req, res) => {
@@ -444,20 +452,76 @@ exports.getAdminDashboard = async (req, res) => {
 
 exports.getSuperAdminDashboard = async (req, res) => {
   try {
-
+    // =========================
+    // 🔹 TOP STATS
+    // =========================
     const totalUsers = await User.count();
-
     const totalBranches = await Branch.count();
-
     const totalStock = (await Stock.sum("quantity")) || 0;
-
     const totalStockValue = (await Stock.sum("value")) || 0;
 
-   const branches = await Branch.findAll({
+    const totalSales =
+      (await Ledger.sum("total", {
+        where: { type: "SALE" }
+      })) || 0;
+
+    // =========================
+    // 🔹 SALES ANALYTICS
+    // =========================
+    const salesData = await Ledger.findAll({
+      attributes: [
+        [sequelize.fn("DATE", sequelize.col("createdAt")), "date"],
+        [sequelize.fn("SUM", sequelize.col("total")), "total"]
+      ],
+      where: { type: "SALE" },
+      group: [sequelize.fn("DATE", sequelize.col("createdAt"))],
+      order: [[sequelize.fn("DATE", sequelize.col("createdAt")), "ASC"]],
+      raw: true
+    });
+
+    const purchaseData = await Ledger.findAll({
+      attributes: [
+        [sequelize.fn("DATE", sequelize.col("createdAt")), "date"],
+        [sequelize.fn("SUM", sequelize.col("total")), "total"]
+      ],
+      where: { type: "PURCHASE" },
+      group: [sequelize.fn("DATE", sequelize.col("createdAt"))],
+      order: [[sequelize.fn("DATE", sequelize.col("createdAt")), "ASC"]],
+      raw: true
+    });
+
+    // =========================
+    // 🔹 STOCK DISTRIBUTION
+    // =========================
+    const stockRaw = await Stock.findAll({
+      attributes: [
+        "category",
+        [sequelize.fn("SUM", sequelize.col("quantity")), "total"]
+      ],
+      group: ["category"],
+      raw: true
+    });
+
+    const totalCategoryStock = stockRaw.reduce(
+      (sum, i) => sum + Number(i.total),
+      0
+    );
+
+    const stockDistribution = stockRaw.map((i) => ({
+      category: i.category || "Others",
+      total: Number(i.total),
+      percentage: totalCategoryStock
+        ? ((i.total / totalCategoryStock) * 100).toFixed(1)
+        : 0
+    }));
+
+    // =========================
+    // 🔹 BRANCH OVERVIEW
+    // =========================
+    const branches = await Branch.findAll({
       attributes: [
         "id",
         "name",
-
         [
           sequelize.fn(
             "COALESCE",
@@ -466,7 +530,6 @@ exports.getSuperAdminDashboard = async (req, res) => {
           ),
           "stockItems"
         ],
-
         [
           sequelize.fn(
             "COALESCE",
@@ -476,7 +539,6 @@ exports.getSuperAdminDashboard = async (req, res) => {
           "purchase"
         ]
       ],
-
       include: [
         {
           model: Stock,
@@ -484,44 +546,119 @@ exports.getSuperAdminDashboard = async (req, res) => {
           attributes: []
         }
       ],
-
       group: ["Branch.id"],
-      order: [["id", "ASC"]],
       raw: true
     });
 
-    // frontend friendly format
-    const result = branches.map((b) => ({
-      branchId: b.id,
+    const branchOverview = branches.map((b) => ({
       branchName: b.name,
       stockItems: Number(b.stockItems),
-
-      // demo values (future sales table se replace)
       purchase: Number(b.purchase),
       sale: Math.floor(Number(b.purchase) * 0.4),
-
       stockIn: Number(b.stockItems),
       stockOut: Math.floor(Number(b.stockItems) * 0.3)
     }));
 
+    // =========================
+    // 🔹 RECENT ACTIVITIES (ADVANCED)
+    // =========================
 
+    // Ledger Activities
+    const ledgerActivities = await Ledger.findAll({
+      limit: 5,
+      order: [["createdAt", "DESC"]],
+      raw: true
+    });
+
+    // Latest User
+    const userActivities = await User.findAll({
+      limit: 2,
+      order: [["createdAt", "DESC"]],
+      raw: true
+    });
+
+    // Latest Stock Updates
+    const stockActivities = await Stock.findAll({
+      limit: 2,
+      order: [["updatedAt", "DESC"]],
+      raw: true
+    });
+
+    let activities = [];
+
+    // 👤 Users
+    userActivities.forEach((u) => {
+      activities.push({
+        title: "User Registered",
+        description: u.name || "New User",
+        time: u.createdAt,
+        type: "user",
+        icon: "user"
+      });
+    });
+
+    // 📦 Stock
+    stockActivities.forEach((s) => {
+      activities.push({
+        title: "Stock Updated",
+        description: s.item || "Stock Item",
+        time: s.updatedAt,
+        type: "stock",
+        icon: "box"
+      });
+    });
+
+    // 💰 Ledger
+    ledgerActivities.forEach((l) => {
+      if (l.type === "SALE") {
+        activities.push({
+          title: "Sales Transaction",
+          description: `Sale completed - ₹${l.total}`,
+          time: l.createdAt,
+          type: "sale",
+          icon: "dollar"
+        });
+      } else if (l.type === "PURCHASE") {
+        activities.push({
+          title: "Purchase Entry",
+          description: `Purchase added - ₹${l.total}`,
+          time: l.createdAt,
+          type: "purchase",
+          icon: "cart"
+        });
+      }
+    });
+
+    // 🔄 SORT & LIMIT
+    const recentActivities = activities
+      .sort((a, b) => new Date(b.time) - new Date(a.time))
+      .slice(0, 5);
+
+    // =========================
+    // ✅ FINAL RESPONSE
+    // =========================
     res.json({
       stats: {
         totalUsers,
         totalStock,
         totalBranches,
+        totalSales,
         totalStockValue
       },
-
-       totalBranches: result.length,
-      branches: result
+      salesAnalytics: {
+        sales: salesData,
+        purchase: purchaseData
+      },
+      stockDistribution,
+      branchOverview,
+      recentActivities
     });
 
   } catch (err) {
+    console.error("DASHBOARD ERROR:", err);
     res.status(500).json({ error: err.message });
   }
 };
-
 
 
 
@@ -671,10 +808,94 @@ exports.getAllUsersForDashboard = async (req, res) => {
 exports.getBranchOverview = async (req, res) => {
   try {
 
+    // =========================
+    // 🔹 CARDS
+    // =========================
+    const totalStock = (await Stock.sum("quantity")) || 0;
+    const totalStockValue = (await Stock.sum("value")) || 0;
+
+    const totalSales =
+      (await Ledger.sum("total", { where: { type: "SALE" } })) || 0;
+
+    const agingItems =
+      (await Stock.count({
+        where: { quantity: { [Op.lt]: 50 } }
+      })) || 0;
+
+    // =========================
+    // 🔹 STOCK STATUS
+    // =========================
+    const stockStatusRaw = await Stock.findAll({
+      attributes: [
+        "status",
+        [sequelize.fn("COUNT", sequelize.col("id")), "count"]
+      ],
+      group: ["status"],
+      raw: true
+    });
+
+    const stockStatus = {
+      GOOD: 0,
+      DAMAGED: 0,
+      REPAIRABLE: 0
+    };
+
+    stockStatusRaw.forEach((s) => {
+      stockStatus[s.status] = Number(s.count);
+    });
+
+    // =========================
+    // 🔹 BAR GRAPH (FIXED)
+    // =========================
+    const barGraphRaw = await StockMovement.findAll({
+      attributes: [
+        [
+          sequelize.literal(`TO_CHAR("created_at", 'IW')`),
+          "week"
+        ],
+        [
+          sequelize.fn(
+            "SUM",
+            sequelize.literal(`CASE WHEN type='IN' THEN quantity ELSE 0 END`)
+          ),
+          "stockIn"
+        ],
+        [
+          sequelize.fn(
+            "SUM",
+            sequelize.literal(`CASE WHEN type='OUT' THEN quantity ELSE 0 END`)
+          ),
+          "stockOut"
+        ]
+      ],
+      group: [sequelize.literal(`TO_CHAR("created_at", 'IW')`)],
+      order: [[sequelize.literal(`TO_CHAR("created_at", 'IW')`), "ASC"]],
+      raw: true
+    });
+
+    const barGraph = barGraphRaw.map((d, i) => ({
+      week: `Week ${i + 1}`,
+      stockIn: Number(d.stockIn),
+      stockOut: Number(d.stockOut)
+    }));
+
+    // =========================
+    // 🔹 LINE GRAPH
+    // =========================
+    const lineGraph = barGraph.map((d) => ({
+      week: d.week,
+      stockIn: d.stockIn,
+      stockOut: d.stockOut
+    }));
+
+    // =========================
+    // 🔹 BRANCH DATA (STATE INCLUDED)
+    // =========================
     const branches = await Branch.findAll({
       attributes: [
         "id",
         "name",
+        "state", // ✅ ADDED
 
         [
           sequelize.fn(
@@ -694,7 +915,6 @@ exports.getBranchOverview = async (req, res) => {
           "purchase"
         ]
       ],
-
       include: [
         {
           model: Stock,
@@ -702,32 +922,101 @@ exports.getBranchOverview = async (req, res) => {
           attributes: []
         }
       ],
-
-      group: ["Branch.id"],
-      order: [["id", "ASC"]],
+      group: ["Branch.id", "Branch.name", "Branch.state"], // ✅ FIXED
       raw: true
     });
 
-    // frontend friendly format
-    const result = branches.map((b) => ({
-      branchId: b.id,
-      branchName: b.name,
-      stockItems: Number(b.stockItems),
+    // =========================
+    // 🔹 STOCK MOVEMENT MAP
+    // =========================
+    const movement = await StockMovement.findAll({
+      attributes: [
+        "branch_id",
+        [
+          sequelize.fn(
+            "SUM",
+            sequelize.literal(`CASE WHEN type='IN' THEN quantity ELSE 0 END`)
+          ),
+          "stockIn"
+        ],
+        [
+          sequelize.fn(
+            "SUM",
+            sequelize.literal(`CASE WHEN type='OUT' THEN quantity ELSE 0 END`)
+          ),
+          "stockOut"
+        ]
+      ],
+      group: ["branch_id"],
+      raw: true
+    });
 
-      // demo values (future sales table se replace)
-      purchase: Number(b.purchase),
-      sale: Math.floor(Number(b.purchase) * 0.4),
+    const movementMap = {};
+    movement.forEach((m) => {
+      movementMap[m.branch_id] = {
+        stockIn: Number(m.stockIn),
+        stockOut: Number(m.stockOut)
+      };
+    });
 
-      stockIn: Number(b.stockItems),
-      stockOut: Math.floor(Number(b.stockItems) * 0.3)
-    }));
+    // =========================
+    // 🔹 FORMAT ₹
+    // =========================
+    const formatRupee = (num) => {
+      if (!num) return "₹ 0";
+      return `₹ ${(num / 100000).toFixed(0)} Lakhs`;
+    };
 
+    // =========================
+    // 🔹 FINAL TABLE
+    // =========================
+    const branchData = branches.map((b) => {
+      const move = movementMap[b.id] || { stockIn: 0, stockOut: 0 };
+
+      return {
+        branchName: b.name,
+        state: b.state, // ✅ NOW INCLUDED
+
+        stockItems:
+          Number(b.stockItems) >= 1000
+            ? `${Math.floor(Number(b.stockItems) / 1000)}K`
+            : Number(b.stockItems),
+
+        purchase: formatRupee(Number(b.purchase)),
+
+        // TEMP (can replace with real sales)
+        sale: formatRupee(Number(b.purchase)),
+
+        stockIn:
+          move.stockIn >= 1000
+            ? `${Math.floor(move.stockIn / 1000)}K`
+            : move.stockIn,
+
+        stockOut:
+          move.stockOut >= 1000
+            ? `${Math.floor(move.stockOut / 1000)}K`
+            : move.stockOut
+      };
+    });
+
+    // =========================
+    // ✅ FINAL RESPONSE
+    // =========================
     res.json({
-      totalBranches: result.length,
-      branches: result
+      cards: {
+        totalStock,
+        totalStockValue,
+        totalSales,
+        agingItems
+      },
+      barGraph,
+      lineGraph,
+      stockStatus,
+      branches: branchData
     });
 
   } catch (err) {
+    console.error("BRANCH OVERVIEW ERROR:", err);
     res.status(500).json({ error: err.message });
   }
 };

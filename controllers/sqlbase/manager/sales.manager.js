@@ -8,7 +8,7 @@ const {
   Ledger,
   sequelize
 } = require("../../../model/SQL_Model");
-
+const pdf = require("html-pdf");
 const puppeteer = require("puppeteer");
 const { generateEwayBill } = require("../../../utils/ewayService");
 const { quotationHTML } = require("../../../utils/qt");
@@ -183,14 +183,10 @@ exports.createQuotation = async (req, res) => {
       return res.status(400).json({ error: "Products are required" });
     }
 
-    // =========================
-    // CLIENT
-    // =========================
+    // ================= CLIENT =================
     const clientData = await getOrCreateClient({ ...client, branch_id }, t);
 
-    // =========================
-    // STOCK VALIDATION
-    // =========================
+    // ================= STOCK VALIDATION =================
     for (const p of products) {
       const stock = await Stock.findOne({
         where: { item: p.product_name, branch_id },
@@ -199,22 +195,16 @@ exports.createQuotation = async (req, res) => {
 
       if (!stock) {
         if (!t.finished) await t.rollback();
-        return res
-          .status(400)
-          .json({ error: `Stock not found for ${p.product_name}` });
+        return res.status(400).json({ error: `Stock not found for ${p.product_name}` });
       }
 
       if (stock.quantity < p.quantity) {
         if (!t.finished) await t.rollback();
-        return res
-          .status(400)
-          .json({ error: `Not enough stock for ${p.product_name}` });
+        return res.status(400).json({ error: `Not enough stock for ${p.product_name}` });
       }
     }
 
-    // =========================
-    // QUOTATION NO
-    // =========================
+    // ================= QUOTATION NO =================
     const last = await Quotation.findOne({
       where: { branch_id },
       order: [["createdAt", "DESC"]],
@@ -230,18 +220,16 @@ exports.createQuotation = async (req, res) => {
 
     const quotation_no = `QT-${branch_id}-${String(next).padStart(4, "0")}`;
 
-    // =========================
-    // TOTAL CALCULATION
-    // =========================
+    // ================= TOTAL =================
     let subtotal = 0;
-    for (const p of products) subtotal += p.quantity * p.unit_price;
+    for (const p of products) {
+      subtotal += p.quantity * p.unit_price;
+    }
 
     const gst_amount = (subtotal * gst_percent) / 100;
     const grand_total = subtotal + gst_amount;
 
-    // =========================
-    // CREATE QUOTATION
-    // =========================
+    // ================= CREATE QUOTATION =================
     const quotation = await Quotation.create(
       {
         quotation_no,
@@ -255,11 +243,10 @@ exports.createQuotation = async (req, res) => {
       { transaction: t }
     );
 
-    // =========================
-    // CREATE QUOTATION ITEMS
-    // =========================
+    // ================= ITEMS =================
     for (const p of products) {
       const itemTotal = p.quantity * p.unit_price;
+
       const cgst = (itemTotal * gst_percent) / 200;
       const sgst = (itemTotal * gst_percent) / 200;
 
@@ -281,49 +268,38 @@ exports.createQuotation = async (req, res) => {
       );
     }
 
-    // =========================
-    // COMMIT TRANSACTION
-    // =========================
     await t.commit();
 
-    // =========================
-    // PDF GENERATION (outside transaction)
-    // =========================
+    // ================= FETCH DATA FOR PDF =================
     const branch = await Branch.findByPk(branch_id);
 
     const items = await QuotationItem.findAll({
       where: { quotation_id: quotation.id },
     });
 
-    const html = quotationHTML({ branch, quotation, client: clientData, items });
-
-  const browser = await puppeteer.launch({
-  headless: "new",
-  args: ["--no-sandbox", "--disable-setuid-sandbox"],
-  executablePath: puppeteer.executablePath(),
-  timeout: 60000
-});
-    const page = await browser.newPage();
-
-    await page.setContent(html, { waitUntil: "networkidle0" });
-
-    const pdf = await page.pdf({ format: "A4", printBackground: true });
-
-    await browser.close();
-
-    // =========================
-    // SEND PDF RESPONSE
-    // =========================
-    res.set({
-      "Content-Type": "application/pdf",
-      "Content-Disposition": `inline; filename=${quotation_no}.pdf`,
+    const html = quotationHTML({
+      branch,
+      quotation,
+      client: clientData,
+      items,
     });
 
-    return res.send(pdf);
+    // ================= PDF GENERATION (html-pdf) =================
+    pdf.create(html, { format: "A4" }).toBuffer((err, buffer) => {
+      if (err) {
+        console.error(err);
+        return res.status(500).json({ error: "PDF generation failed" });
+      }
+
+      res.set({
+        "Content-Type": "application/pdf",
+        "Content-Disposition": `inline; filename=${quotation_no}.pdf`,
+      });
+
+      return res.send(buffer);
+    });
+
   } catch (err) {
-    // =========================
-    // SAFE ROLLBACK
-    // =========================
     try {
       if (!t.finished) await t.rollback();
     } catch (rollbackErr) {
@@ -331,10 +307,12 @@ exports.createQuotation = async (req, res) => {
     }
 
     console.error(err);
-    return res.status(500).json({ message: "Something went wrong!", error: err.message });
+    return res.status(500).json({
+      message: "Something went wrong!",
+      error: err.message,
+    });
   }
 };
-
 exports.convertQuotationToInvoice = async (req, res) => {
 
   let t;
@@ -569,20 +547,19 @@ exports.approveQuotation = async (req, res) => {
   }
 };
 exports.generateQuotationPDF = async (req, res) => {
-
   try {
-
     const { quotation_id } = req.params;
 
-    const quotation = await Quotation.findByPk(
-      quotation_id,
-      {
-        include: [Client, Branch]
-      }
-    );
+    const quotation = await Quotation.findByPk(quotation_id, {
+      include: [Client, Branch],
+    });
+
+    if (!quotation) {
+      return res.status(404).json({ error: "Quotation not found" });
+    }
 
     const items = await QuotationItem.findAll({
-      where: { quotation_id }
+      where: { quotation_id },
     });
 
     const client = quotation.Client;
@@ -591,93 +568,94 @@ exports.generateQuotationPDF = async (req, res) => {
     let rows = "";
 
     items.forEach((it, i) => {
-
       rows += `
       <tr>
         <td>${i + 1}</td>
         <td>${it.product_name}</td>
-        <td>${it.hsn}</td>
+        <td>${it.hsn || ""}</td>
         <td>${it.quantity}</td>
-        <td>${it.unit}</td>
-        <td>${it.unit_price}</td>
-        <td>${it.subtotal}</td>
-        <td>${it.cgst}</td>
-        <td>${it.sgst}</td>
-        <td>${it.amount}</td>
+        <td>${it.unit || ""}</td>
+        <td>${Number(it.unit_price).toFixed(2)}</td>
+        <td>${Number(it.subtotal).toFixed(2)}</td>
+        <td>${Number(it.cgst || 0).toFixed(2)}</td>
+        <td>${Number(it.sgst || 0).toFixed(2)}</td>
+        <td>${Number(it.amount || 0).toFixed(2)}</td>
       </tr>
       `;
-
     });
-
 
     const html = `
+    <html>
+      <head>
+        <style>
+          body { font-family: Arial; font-size: 12px; padding: 10px; }
+          h2, h3, h4 { margin: 5px 0; }
+          table { width: 100%; border-collapse: collapse; margin-top: 10px; }
+          th, td { border: 1px solid #000; padding: 6px; text-align: left; }
+          th { background: #f2f2f2; }
+        </style>
+      </head>
+      <body>
 
-    <h2>${branch.name}</h2>
-    <p>${branch.address}</p>
-    <p>GST : ${branch.gst}</p>
+        <h2>${branch.name || ""}</h2>
+        <p>${branch.address || ""}</p>
+        <p><b>GST:</b> ${branch.gst || ""}</p>
 
-    <h3>QUOTATION</h3>
+        <h3>QUOTATION</h3>
 
-    <p>No : ${quotation.quotation_no}</p>
-    <p>Date : ${quotation.createdAt.toDateString()}</p>
+        <p><b>No:</b> ${quotation.quotation_no}</p>
+        <p><b>Date:</b> ${new Date(quotation.createdAt).toDateString()}</p>
 
-    <h4>Billing</h4>
-    <p>${client.name}</p>
-    <p>${client.address}</p>
+        <h4>Billing</h4>
+        <p>${client.name || ""}</p>
+        <p>${client.address || ""}</p>
 
-    <table border="1" width="100%">
-    <tr>
-    <th>#</th>
-    <th>Item</th>
-    <th>HSN</th>
-    <th>Qty</th>
-    <th>Unit</th>
-    <th>Rate</th>
-    <th>Taxable</th>
-    <th>CGST</th>
-    <th>SGST</th>
-    <th>Total</th>
-    </tr>
+        <table>
+          <tr>
+            <th>#</th>
+            <th>Item</th>
+            <th>HSN</th>
+            <th>Qty</th>
+            <th>Unit</th>
+            <th>Rate</th>
+            <th>Taxable</th>
+            <th>CGST</th>
+            <th>SGST</th>
+            <th>Total</th>
+          </tr>
 
-    ${rows}
+          ${rows}
 
-    </table>
+        </table>
 
-    <h3>Total : ${quotation.total_amount}</h3>
-    <h3>GST : ${quotation.gst_amount}</h3>
+        <h3>Total: ${Number(quotation.total_amount).toFixed(2)}</h3>
+        <h3>GST: ${Number(quotation.gst_amount).toFixed(2)}</h3>
 
+      </body>
+    </html>
     `;
 
+    // ================= PDF GENERATION =================
+    pdf.create(html, { format: "A4" }).toBuffer((err, buffer) => {
+      if (err) {
+        console.error(err);
+        return res.status(500).json({ error: "PDF generation failed" });
+      }
 
-const browser = await puppeteer.launch({
-  headless: "new",
-  args: ["--no-sandbox", "--disable-setuid-sandbox"],
-  executablePath: puppeteer.executablePath(),
-  timeout: 60000
-});
+      res.set({
+        "Content-Type": "application/pdf",
+        "Content-Disposition": `inline; filename=${quotation.quotation_no}.pdf`,
+      });
 
-    const page = await browser.newPage();
-
-    await page.setContent(html);
-
-    const pdf = await page.pdf({
-      format: "A4"
+      return res.send(buffer);
     });
-
-    await browser.close();
-
-    res.contentType("application/pdf");
-
-    res.send(pdf);
 
   } catch (err) {
-
-    res.status(500).json({
-      error: err.message
+    console.error(err);
+    return res.status(500).json({
+      error: err.message,
     });
-
   }
-
 };
 
 exports.createSaleEntry = async (req, res) => {
